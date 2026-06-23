@@ -1,5 +1,4 @@
 import type { VocabWord } from '../types/vocab'
-import type { AppData } from './storage'
 
 export function printWordsHtml(words: VocabWord[], title: string): string {
   const rows = words.map((w, i) => `

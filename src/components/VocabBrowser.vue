@@ -1,284 +1,317 @@
 <script setup lang="ts">
-import { ref, computed } from 'vue'
-import { getWordBank, searchWords, TOTAL_WORDS } from '../utils/wordbank'
+import { ref, computed, onMounted, watch } from 'vue'
+import { loadWordBank, getBookById, AVAILABLE_BOOKS } from '../utils/wordbank'
 import type { VocabWord } from '../types/vocab'
 
-const wordBank = getWordBank()
-const searchQuery = ref('')
+const PAGE_SIZE = 50
+const tabs = ['全部', 'A', 'B', 'C', 'D', 'E', 'F', 'G', 'H', 'I', 'J', 'K', 'L', 'M', 'N', 'O', 'P', 'Q', 'R', 'S', 'T', 'U', 'V', 'W', 'X', 'Y', 'Z']
+
+const activeTab = ref('全部')
+const searchKeyword = ref('')
 const currentPage = ref(1)
-const pageSize = 50
-const expandedWord = ref<string | null>(null)
+const expandedWords = ref<Set<string>>(new Set())
+const wordBank = ref<VocabWord[]>([])
+const loading = ref(true)
+const error = ref('')
+
+onMounted(async () => {
+  await loadCurrentBookFromCache()
+})
+
+// Watch for window.__currentWordBank changes
+watch(
+  () => (window as any).__currentWordBank,
+  async () => {
+    await loadCurrentBookFromCache()
+  }
+)
+
+async function loadCurrentBookFromCache() {
+  loading.value = true
+  error.value = ''
+  
+  // Try cache first
+  const cached = (window as any).__currentWordBank
+  if (cached && Array.isArray(cached) && cached.length > 0) {
+    wordBank.value = cached
+    loading.value = false
+    return
+  }
+  
+  // Try loading from book list - default to gaozhong
+  for (const book of AVAILABLE_BOOKS) {
+    try {
+      const words = await loadWordBank(book.id)
+      if (words && words.length > 50) {
+        wordBank.value = words
+        ;(window as any).__currentWordBank = words
+        break
+      }
+    } catch {}
+  }
+  
+  loading.value = false
+  if (wordBank.value.length === 0) {
+    error.value = '无法加载词库，请确保词库文件已部署'
+  }
+}
 
 const filteredWords = computed(() => {
-  const q = searchQuery.value.trim()
-  if (!q) return wordBank
-  return searchWords(q)
+  let words = wordBank.value
+
+  if (activeTab.value !== '全部') {
+    const letter = activeTab.value.toLowerCase()
+    words = words.filter((w) => w.word.toLowerCase().startsWith(letter))
+  }
+
+  if (searchKeyword.value.trim()) {
+    const kw = searchKeyword.value.trim().toLowerCase()
+    words = words.filter(w =>
+      w.word.toLowerCase().includes(kw) ||
+      w.meaning.toLowerCase().includes(kw)
+    )
+    if (activeTab.value !== '全部') {
+      const letter = activeTab.value.toLowerCase()
+      words = words.filter((w) => w.word.toLowerCase().startsWith(letter))
+    }
+  }
+
+  return words
 })
 
-const totalPages = computed(() => Math.max(1, Math.ceil(filteredWords.value.length / pageSize)))
+const totalPages = computed(() => {
+  return Math.ceil(filteredWords.value.length / PAGE_SIZE)
+})
 
 const pagedWords = computed(() => {
-  const start = (currentPage.value - 1) * pageSize
-  return filteredWords.value.slice(start, start + pageSize)
+  const start = (currentPage.value - 1) * PAGE_SIZE
+  return filteredWords.value.slice(start, start + PAGE_SIZE)
 })
 
-const startIndex = computed(() => (currentPage.value - 1) * pageSize + 1)
+const totalCount = computed(() => wordBank.value.length)
 
-function goToPage(p: number) {
-  if (p >= 1 && p <= totalPages.value) {
-    currentPage.value = p
+function switchTab(tab: string) {
+  activeTab.value = tab
+  currentPage.value = 1
+  expandedWords.value.clear()
+}
+
+function toggleWord(word: string) {
+  if (expandedWords.value.has(word)) {
+    expandedWords.value.delete(word)
+  } else {
+    expandedWords.value.add(word)
   }
 }
 
-const alphabet = 'ABCDEFGHIJKLMNOPQRSTUVWXYZ'.split('')
-
-function jumpToLetter(letter: string) {
-  const idx = wordBank.findIndex(w => w.word[0].toUpperCase() >= letter)
-  if (idx >= 0) {
-    currentPage.value = Math.floor(idx / pageSize) + 1
-    searchQuery.value = ''
-  }
+function prevPage() {
+  if (currentPage.value > 1) currentPage.value--
 }
 
-function toggleExpand(word: string) {
-  expandedWord.value = expandedWord.value === word ? null : word
+function nextPage() {
+  if (currentPage.value < totalPages.value) currentPage.value++
+}
+
+function onSearch() {
+  currentPage.value = 1
 }
 </script>
 
 <template>
   <div class="vocab-browser">
-    <h2>词库浏览</h2>
+    <div class="browser-header">
+      <h2>📚 单词浏览</h2>
+      <span class="count-badge">{{ totalCount }} 词</span>
+    </div>
 
     <!-- Search -->
     <div class="search-bar">
       <input
-        v-model="searchQuery"
-        type="text"
+        v-model="searchKeyword"
         placeholder="搜索单词或释义..."
+        @input="onSearch"
         class="search-input"
       />
-      <span class="search-count">{{ filteredWords.length }} / {{ TOTAL_WORDS }}</span>
     </div>
 
-    <!-- Alphabet Index -->
-    <div class="alpha-index">
+    <!-- Letter Tabs -->
+    <div class="letter-tabs">
       <button
-        v-for="letter in alphabet"
-        :key="letter"
-        class="alpha-btn"
-        @click="jumpToLetter(letter)"
+        v-for="tab in tabs"
+        :key="tab"
+        :class="['letter-btn', { active: activeTab === tab }]"
+        @click="switchTab(tab)"
       >
-        {{ letter }}
+        {{ tab }}
       </button>
     </div>
 
+    <!-- Loading / Error -->
+    <div v-if="loading" class="browser-loading">加载中...</div>
+    <div v-else-if="error" class="browser-error">{{ error }}</div>
+
     <!-- Word List -->
-    <div class="word-list">
+    <div v-else class="word-list">
       <div
-        v-for="(w, i) in pagedWords"
+        v-for="w in pagedWords"
         :key="w.word"
-        class="word-item"
-        @click="toggleExpand(w.word)"
+        :class="['word-card', { expanded: expandedWords.has(w.word) }]"
+        @click="toggleWord(w.word)"
       >
-        <div class="word-row">
-          <span class="word-idx">{{ startIndex + i }}</span>
+        <div class="word-main">
           <span class="word-text">{{ w.word }}</span>
-          <span class="word-phonetic" v-if="w.phonetic">{{ w.phonetic }}</span>
-          <span class="word-pos" v-if="w.pos">{{ w.pos }}</span>
-          <span class="word-meaning">{{ w.meaning }}</span>
-          <span class="expand-icon">{{ expandedWord === w.word ? '▲' : '▼' }}</span>
-        </div>
-        <div v-if="expandedWord === w.word && w.phrases?.length" class="word-detail">
-          <div v-for="p in w.phrases" :key="p.phrase" class="phrase-item">
-            <span class="phrase-text">{{ p.phrase }}</span>
-            <span class="phrase-trans">{{ p.translation }}</span>
-          </div>
+          <span v-if="w.phonetic" class="phonetic">{{ w.phonetic }}</span>
+          <span v-if="w.pos" class="pos">{{ w.pos }}</span>
+          <span class="meaning">{{ expandedWords.has(w.word) ? w.meaning : w.meaning.slice(0, 20) + (w.meaning.length > 20 ? '...' : '') }}</span>
         </div>
       </div>
     </div>
 
     <!-- Pagination -->
     <div class="pagination" v-if="totalPages > 1">
-      <button
-        class="page-btn"
-        :disabled="currentPage === 1"
-        @click="goToPage(currentPage - 1)"
-      >
-        ← 上一页
-      </button>
+      <button class="page-btn" :disabled="currentPage <= 1" @click="prevPage">‹</button>
       <span class="page-info">{{ currentPage }} / {{ totalPages }}</span>
-      <button
-        class="page-btn"
-        :disabled="currentPage === totalPages"
-        @click="goToPage(currentPage + 1)"
-      >
-        下一页 →
-      </button>
+      <button class="page-btn" :disabled="currentPage >= totalPages" @click="nextPage">›</button>
     </div>
   </div>
 </template>
 
 <style scoped>
 .vocab-browser {
-  padding: 16px;
-  background: white;
-  border-radius: 12px;
-  border: 0.5px solid #e8e8e8;
+  max-width: 600px;
+  margin: 0 auto;
 }
-.vocab-browser h2 {
-  font-size: 18px;
-  font-weight: 600;
-  color: #333;
-  margin: 0 0 16px;
-}
-.search-bar {
+.browser-header {
   display: flex;
+  justify-content: space-between;
   align-items: center;
-  gap: 10px;
+  margin-bottom: 14px;
+}
+.browser-header h2 {
+  margin: 0;
+  font-size: 20px;
+  color: #2c3e50;
+}
+.count-badge {
+  background: #4a90d9;
+  color: white;
+  padding: 4px 14px;
+  border-radius: 16px;
+  font-size: 13px;
+}
+
+.search-bar {
   margin-bottom: 12px;
 }
 .search-input {
-  flex: 1;
-  padding: 8px 12px;
-  border: 0.5px solid #ddd;
+  width: 100%;
+  padding: 10px 14px;
+  border: 1px solid #e0e0e0;
   border-radius: 8px;
   font-size: 14px;
   outline: none;
   transition: border-color 0.2s;
 }
 .search-input:focus {
-  border-color: #378ADD;
+  border-color: #4a90d9;
 }
-.search-count {
-  font-size: 12px;
-  color: #999;
-  white-space: nowrap;
-}
-.alpha-index {
+
+.letter-tabs {
   display: flex;
   flex-wrap: wrap;
-  gap: 2px;
-  padding: 8px 0;
-  margin-bottom: 12px;
-  border-top: 0.5px solid #eee;
-  border-bottom: 0.5px solid #eee;
+  gap: 4px;
+  margin-bottom: 14px;
 }
-.alpha-btn {
-  width: 28px;
-  height: 24px;
-  border: none;
-  background: transparent;
-  color: #378ADD;
-  font-size: 11px;
-  font-weight: 600;
+.letter-btn {
+  padding: 4px 10px;
+  border: 1px solid #e0e0e0;
+  border-radius: 6px;
+  background: white;
+  font-size: 12px;
   cursor: pointer;
-  border-radius: 4px;
-  padding: 0;
+  transition: all 0.15s;
 }
-.alpha-btn:hover {
-  background: #378ADD;
+.letter-btn.active {
+  background: #4a90d9;
   color: white;
+  border-color: #4a90d9;
 }
+
+.browser-loading,
+.browser-error {
+  text-align: center;
+  padding: 40px;
+  color: #999;
+}
+
 .word-list {
-  margin-bottom: 12px;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
 }
-.word-item {
-  padding: 8px 10px;
-  border-bottom: 0.5px solid #f0f0f0;
+.word-card {
+  padding: 10px 14px;
+  background: white;
+  border: 1px solid #e8e8e8;
+  border-radius: 8px;
   cursor: pointer;
-  transition: background 0.15s;
+  transition: all 0.15s;
 }
-.word-item:hover {
+.word-card:hover {
+  border-color: #d0d0d0;
+}
+.word-card.expanded {
+  border-color: #4a90d9;
   background: #f8faff;
 }
-.word-row {
+.word-main {
   display: flex;
   align-items: center;
-  gap: 6px;
-}
-.word-idx {
-  font-size: 11px;
-  color: #ccc;
-  min-width: 30px;
+  gap: 8px;
+  flex-wrap: wrap;
 }
 .word-text {
-  font-size: 14px;
   font-weight: 600;
-  color: #185FA5;
-  min-width: 100px;
-}
-.word-phonetic {
-  font-size: 12px;
-  color: #aaa;
+  color: #2c3e50;
   min-width: 80px;
+  font-size: 14px;
 }
-.word-pos {
-  font-size: 11px;
-  color: #888;
-  background: #f0f0f0;
-  padding: 1px 5px;
-  border-radius: 3px;
-  min-width: 28px;
-  text-align: center;
+.phonetic {
+  color: #999;
+  font-size: 12px;
+  font-style: italic;
 }
-.word-meaning {
-  flex: 1;
-  font-size: 13px;
+.pos {
+  color: #e67e22;
+  font-size: 12px;
+}
+.meaning {
   color: #555;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-.expand-icon {
-  font-size: 10px;
-  color: #bbb;
-  margin-left: 4px;
-}
-.word-detail {
-  margin-top: 6px;
-  padding: 6px 10px;
-  background: #f8faff;
-  border-radius: 6px;
-}
-.phrase-item {
-  display: flex;
-  gap: 8px;
   font-size: 13px;
-  padding: 2px 0;
+  flex: 1;
 }
-.phrase-text {
-  font-weight: 600;
-  color: #185FA5;
-}
-.phrase-trans {
-  color: #666;
-}
+
 .pagination {
   display: flex;
-  align-items: center;
   justify-content: center;
+  align-items: center;
   gap: 12px;
-  padding-top: 12px;
+  padding: 20px 0;
 }
 .page-btn {
-  padding: 6px 16px;
-  border: 0.5px solid #ddd;
+  padding: 8px 16px;
+  border: 1px solid #e0e0e0;
+  border-radius: 8px;
   background: white;
-  border-radius: 6px;
-  font-size: 13px;
+  font-size: 18px;
   cursor: pointer;
-  color: #333;
-}
-.page-btn:hover:not(:disabled) {
-  border-color: #378ADD;
-  color: #378ADD;
 }
 .page-btn:disabled {
-  opacity: 0.4;
-  cursor: not-allowed;
+  opacity: 0.3;
+  cursor: default;
 }
 .page-info {
-  font-size: 13px;
-  color: #888;
+  font-size: 14px;
+  color: #666;
 }
 </style>

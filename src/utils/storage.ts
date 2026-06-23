@@ -1,12 +1,70 @@
-import type { AppData } from '../types/vocab'
+import type { AppData, BookProgress } from '../types/vocab'
+import { getDefaultBook } from './wordbank'
 
-const STORAGE_KEY = 'ha_vocab_tracker'
+export interface HAUser {
+  id: string
+  name: string
+  isAdmin: boolean
+}
+
+const BASE_KEY = 'ha_vocab_tracker'
+
+function getHAUser(): HAUser {
+  try {
+    const parentWin = window.parent
+    const hass = (parentWin as any)?.hass
+    if (hass?.user?.id) {
+      return {
+        id: hass.user.id,
+        name: hass.user.name || 'HA User',
+        isAdmin: hass.user.is_admin || false
+      }
+    }
+  } catch {
+    // Cross-origin iframe
+  }
+  return { id: 'local', name: '本地用户', isAdmin: true }
+}
+
+let cachedUser: HAUser | null = null
+
+export function getCurrentUser(): HAUser {
+  if (!cachedUser) {
+    cachedUser = getHAUser()
+  }
+  return cachedUser
+}
+
+export function getStorageKey(): string {
+  const user = getCurrentUser()
+  return user.id === 'local' ? BASE_KEY : `${BASE_KEY}_${user.id}`
+}
 
 export function loadData(): AppData {
   try {
-    const raw = localStorage.getItem(STORAGE_KEY)
+    const key = getStorageKey()
+    const raw = localStorage.getItem(key)
     if (raw) {
-      return JSON.parse(raw) as AppData
+      const data = JSON.parse(raw) as AppData
+      // Migrate old format to new
+      if (!data.bookProgress) {
+        data.bookProgress = {}
+        const old = data as any
+        if (old.currentDay || old.records) {
+          data.bookProgress[getDefaultBook()] = {
+            currentDay: old.currentDay || 1,
+            records: old.records || {},
+            streakDays: old.streakDays || 0,
+            totalLearned: old.totalLearned || 0,
+            lastCheckin: old.lastCheckin || '',
+            startedAt: old.startedAt || new Date().toISOString()
+          }
+        }
+      }
+      if (!data.currentWordBook) {
+        data.currentWordBook = getDefaultBook()
+      }
+      return data
     }
   } catch (e) {
     console.warn('Failed to load data, resetting', e)
@@ -16,41 +74,56 @@ export function loadData(): AppData {
 
 export function saveData(data: AppData): void {
   try {
-    localStorage.setItem(STORAGE_KEY, JSON.stringify(data))
+    const key = getStorageKey()
+    localStorage.setItem(key, JSON.stringify(data))
   } catch (e) {
     console.error('Failed to save data', e)
   }
 }
 
 export function resetData(): void {
-  localStorage.removeItem(STORAGE_KEY)
+  const key = getStorageKey()
+  localStorage.removeItem(key)
 }
 
-export function exportData(data: AppData): string {
-  return JSON.stringify(data, null, 2)
-}
-
-export function importData(json: string): boolean {
-  try {
-    const data = JSON.parse(json) as AppData
-    if (typeof data.currentDay === 'number' && data.records && typeof data.streakDays === 'number') {
-      saveData(data)
-      return true
-    }
-    return false
-  } catch {
-    return false
+export function getBookProgress(data: AppData, bookId: string): BookProgress {
+  if (!data.bookProgress) {
+    data.bookProgress = {}
   }
+  if (!data.bookProgress[bookId]) {
+    data.bookProgress[bookId] = {
+      currentDay: 1,
+      records: {},
+      streakDays: 0,
+      totalLearned: 0,
+      lastCheckin: '',
+      startedAt: new Date().toISOString()
+    }
+  }
+  return data.bookProgress[bookId]
 }
 
-function getDefaultData(): AppData {
+export function saveBookProgress(data: AppData, bookId: string, progress: BookProgress): void {
+  data.bookProgress[bookId] = progress
+  saveData(data)
+}
+
+export function getDefaultData(): AppData {
+  const defaultBook = getDefaultBook()
   return {
-    currentDay: 1,
-    records: {},
-    streakDays: 0,
-    totalLearned: 0,
-    lastCheckin: '',
-    startedAt: new Date().toISOString()
+    currentWordBook: defaultBook,
+    dailyMinutes: {},
+    wrongWords: {},
+    bookProgress: {
+      [defaultBook]: {
+        currentDay: 1,
+        records: {},
+        streakDays: 0,
+        totalLearned: 0,
+        lastCheckin: '',
+        startedAt: new Date().toISOString()
+      }
+    }
   }
 }
 

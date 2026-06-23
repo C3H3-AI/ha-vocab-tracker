@@ -59,15 +59,20 @@ def main():
     
     # Step 3: Upload to HA
     print("\n=== 3/5 上传到HA ===")
+    def upload_dir(local_dir, remote_dir):
+        for fname in os.listdir(local_dir):
+            local = os.path.join(local_dir, fname)
+            rel = os.path.relpath(local, dist).replace('\\', '/')
+            remote = f"{HA_WWW}/{rel}"
+            if os.path.isdir(local):
+                ha.ssh(f"mkdir -p {remote}")
+                upload_dir(local, remote)
+            elif os.path.isfile(local):
+                ha.upload_file(local, remote)
+                print(f"  ✅ {rel}")
     try:
         ha.ssh(f"mkdir -p {HA_WWW}")
-        # Upload each file
-        for fname in files:
-            local = os.path.join(dist, fname)
-            remote = f"{HA_WWW}/{fname}"
-            if os.path.isfile(local):
-                ha.upload_file(local, remote)
-                print(f"  ✅ {fname}")
+        upload_dir(dist, HA_WWW)
     except Exception as e:
         print(f"  ⚠️ Upload error: {e}")
         print("  ⚠️ 请手动复制 dist/ 目录到 HA /config/www/vocab/")
@@ -95,14 +100,14 @@ def main():
                 break
         
         if not vocab_view:
-            vocab_view = {"title": "词汇学习", "path": "vocabulary", "icon": "mdi:book-education", "badges": [], "cards": []}
+            vocab_view = {"title": "词汇学习", "path": "vocabulary", "icon": "mdi:book-education", "panel": True}
             config.setdefault("views", []).append(vocab_view)
         
+        vocab_view["panel"] = True
         vocab_view["cards"] = [
             {
                 "type": "iframe",
                 "url": "/local/vocab/index.html",
-                "aspect_ratio": "50%",
                 "title": "词汇学习系统"
             }
         ]
