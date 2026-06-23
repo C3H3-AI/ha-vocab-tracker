@@ -69,15 +69,58 @@ const isLastWord = computed(() => {
 // Word card flip animation
 const cardAnimating = ref(false)
 
-// Swipe support
+// Swipe + Keyboard support
 let touchStartX = 0
 let touchStartY = 0
+let keyHandler: ((e: KeyboardEvent) => void) | null = null
 
 onMounted(() => {
+  // 自动推进：如果今天已打卡，直接进入下一天
+  const today = new Date().toISOString().split('T')[0]
+  if (data.value.lastCheckin === today) {
+    data.value.currentDay = (data.value.currentDay || 1) + 1
+    const bank = (window as any).__currentWordBank
+    const maxDay = bank ? Math.ceil(bank.length / WORDS_PER_DAY) : 60
+    if (data.value.currentDay > maxDay) data.value.currentDay = maxDay
+  }
   loadTodayWords()
   initSpeech()
   speechSupported.value = isSpeechSupported()
+  registerKeyboard()
 })
+
+onUnmounted(() => {
+  if (keyHandler) {
+    document.removeEventListener('keydown', keyHandler)
+  }
+})
+
+function registerKeyboard() {
+  keyHandler = (e: KeyboardEvent) => {
+    if (phase.value === 'learning') {
+      if (e.key === 'Enter' || e.key === ' ') {
+        e.preventDefault()
+        if (!isFlipped.value) {
+          flipCard()
+        }
+      }
+      if (isFlipped.value) {
+        if (e.key === '1') rateWord('known')
+        if (e.key === '2') rateWord('fuzzy')
+        if (e.key === '3') rateWord('forgot')
+      }
+      if (e.key === 's' || e.key === 'S') {
+        e.preventDefault()
+        speakCurrentWord()
+      }
+    }
+    if (phase.value === 'ready' && (e.key === 'Enter' || e.key === ' ')) {
+      e.preventDefault()
+      startSession()
+    }
+  }
+  document.addEventListener('keydown', keyHandler)
+}
 
 function loadTodayWords() {
   const bank = (window as any).__currentWordBank
@@ -179,6 +222,14 @@ function onTouchEnd(e: TouchEvent) {
 }
 
 function completeSession() {
+  // 自动推进到下一天
+  data.value.currentDay = (data.value.currentDay || 1) + 1
+  const maxDay = Math.ceil(todayWords.value.length > 0 
+    ? ((window as any).__currentWordBank?.length || 3000) / WORDS_PER_DAY 
+    : 60)
+  if (data.value.currentDay > maxDay) {
+    data.value.currentDay = maxDay // 不超过词库总天数
+  }
   phase.value = 'done'
   emit('update', data.value)
 }

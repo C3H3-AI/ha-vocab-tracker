@@ -56,6 +56,25 @@ export interface BookProgress {
   achievements?: string[]
 }
 
+export interface TestRecord {
+  /** 测试日期 */
+  date: string
+  /** 测试模式: today/review/wrong/range */
+  mode: string
+  /** 正确数 */
+  correct: number
+  /** 错误数 */
+  wrong: number
+  /** 总题数 */
+  total: number
+  /** 用时(秒) */
+  elapsed: number
+  /** 错词列表 */
+  wrongWords: string[]
+  /** 所属词书 */
+  bookId: string
+}
+
 export interface AppData {
   currentWordBook: string
   dailyMinutes: Record<string, number>
@@ -67,4 +86,6 @@ export interface AppData {
   achievements?: string[]
   /** 游戏化: 连续学习天数记录 */
   streakHistory?: Record<string, boolean>
+  /** 测试历史记录 */
+  testHistory?: TestRecord[]
 }

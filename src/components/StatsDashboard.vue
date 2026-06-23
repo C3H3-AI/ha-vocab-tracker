@@ -56,6 +56,30 @@ onMounted(() => {
   intervalInputs.value = [...getIntervals()]
   haConnected.value = isHAConnected()
   ;(window as any).__appData = saved
+  loadTestHistory()
+})
+
+// Test history
+const testHistory = ref<Array<{ date: string; correct: number; wrong: number; total: number }>>([])
+
+function loadTestHistory() {
+  const data = loadData()
+  if (data.testHistory) {
+    // Show last 20 tests
+    testHistory.value = data.testHistory.slice(-20).map(t => ({
+      date: t.date,
+      correct: t.correct,
+      wrong: t.wrong,
+      total: t.total
+    }))
+  }
+}
+
+const testAccuracy = computed(() => {
+  if (testHistory.value.length === 0) return 0
+  const total = testHistory.value.reduce((s, t) => s + t.total, 0)
+  const correct = testHistory.value.reduce((s, t) => s + t.correct, 0)
+  return Math.round(correct / total * 100)
 })
 
 function saveIntervals() {
@@ -155,6 +179,28 @@ function formatDate(d: string): string {
       <div class="curve-note">基于 SM-2 算法预测，假设每次回答质量 = 4</div>
     </div>
 
+    <!-- Test History Trend -->
+    <div class="card" v-if="testHistory.length > 0">
+      <h3 class="card-title">📊 测试成绩趋势</h3>
+      <div class="test-trend">
+        <div class="trend-header">
+          <span class="trend-accuracy">总正确率 <strong>{{ testAccuracy }}%</strong></span>
+          <span class="trend-count">{{ testHistory.length }} 次测试</span>
+        </div>
+        <div class="trend-chart">
+          <div v-for="(t, i) in testHistory" :key="i" class="trend-bar"
+            :style="{ height: Math.max(4, (t.correct / Math.max(1, t.total)) * 60) + 'px' }"
+            :class="{ good: t.correct / t.total >= 0.8, mid: t.correct / t.total >= 0.5, poor: t.correct / t.total < 0.5 }"
+            :title="`${new Date(t.date).toLocaleDateString()}: ${t.correct}/${t.total} (${Math.round(t.correct/t.total*100)}%)`">
+          </div>
+        </div>
+        <div class="trend-labels">
+          <span>早期</span>
+          <span>最近</span>
+        </div>
+      </div>
+    </div>
+
     <!-- Study Heatmap -->
     <StudyHeatmap :dailyMinutes="data.dailyMinutes || {}" />
 
@@ -247,6 +293,18 @@ function formatDate(d: string): string {
 .curve-bar-fill { width: 100%; max-width: 30px; border-radius: 4px 4px 0 0; transition: height 0.3s; min-height: 4px; }
 .curve-bar-label { font-size: 9px; color: var(--text-muted, #999); margin-top: 4px; }
 .curve-note { font-size: 11px; color: var(--text-muted, #999); text-align: center; margin-top: 8px; }
+
+/* Test Trend */
+.test-trend { padding: 0 4px; }
+.trend-header { display: flex; justify-content: space-between; font-size: 13px; color: var(--text-secondary, #555); margin-bottom: 12px; }
+.trend-accuracy strong { color: var(--accent, #4a90d9); }
+.trend-count { color: var(--text-muted, #888); }
+.trend-chart { display: flex; align-items: flex-end; gap: 3px; height: 64px; padding: 4px 0; }
+.trend-bar { flex: 1; min-width: 6px; border-radius: 3px 3px 0 0; transition: height 0.3s; }
+.trend-bar.good { background: #52c41a; }
+.trend-bar.mid { background: #faad14; }
+.trend-bar.poor { background: #ff4d4f; }
+.trend-labels { display: flex; justify-content: space-between; font-size: 10px; color: var(--text-muted, #bbb); margin-top: 4px; }
 
 /* Achievements */
 .achievement-grid { display: flex; flex-wrap: wrap; gap: 8px; }

@@ -1,4 +1,5 @@
 import type { VocabWord } from '../types/vocab'
+import { getCachedBank, setCachedBank } from './cache'
 
 export interface WordBookMeta {
   id: string
@@ -49,12 +50,23 @@ export async function loadWordBank(bookId: string): Promise<VocabWord[]> {
   const meta = BOOK_MAP.get(bookId)
   const fileName = meta?.fileName || bookId
 
+  // 1) 尝试 IndexedDB 缓存
+  const dbCache = await getCachedBank(bookId)
+  if (dbCache && dbCache.length > 0) {
+    bankCache.set(bookId, dbCache as VocabWord[])
+    return dbCache as VocabWord[]
+  }
+
+  // 2) 网络加载
   try {
     const url = `${WORD_BANK_BASE}/${fileName}.json`
     const resp = await fetch(url)
     if (!resp.ok) throw new Error(`HTTP ${resp.status}`)
     const data: VocabWord[] = await resp.json()
+
+    // 写入 IndexedDB 和内存缓存
     bankCache.set(bookId, data)
+    setCachedBank(bookId, data).catch(() => {})
     return data
   } catch (e) {
     console.warn(`Failed to load word bank "${bookId}" (${fileName}.json), using fallback`, e)

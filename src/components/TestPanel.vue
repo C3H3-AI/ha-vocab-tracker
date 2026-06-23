@@ -171,6 +171,24 @@ function finishTest() {
   wrongList.value.forEach(w => {
     data.wrongWords[w.word] = (data.wrongWords[w.word] || 0) + 1
   })
+
+  // Save test history
+  if (!data.testHistory) data.testHistory = []
+  data.testHistory.push({
+    date: new Date().toISOString(),
+    mode: testMode.value,
+    correct: correctCount.value,
+    wrong: wrongCount.value,
+    total: testWords.value.length,
+    elapsed: elapsed.value,
+    wrongWords: wrongList.value.map(w => w.word),
+    bookId: (window as any).__currentWordBank?.bookId || 'unknown'
+  })
+  // Keep only last 100 tests
+  if (data.testHistory.length > 100) {
+    data.testHistory = data.testHistory.slice(-100)
+  }
+
   saveData(data)
   emit('update', data)
 }
