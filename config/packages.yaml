@@ -1,0 +1,215 @@
+# HA Vocab Tracker - Packages 配置
+# 包含：input_helpers, template sensors, automations
+
+input_boolean:
+  vocab_morning_done:
+    name: "早晨词汇已完成"
+    icon: mdi:book-open-variant
+  vocab_evening_done:
+    name: "傍晚阅读已完成"
+    icon: mdi:book-open-page-variant
+
+input_number:
+  vocab_streak_days:
+    name: "连续打卡天数"
+    min: 0
+    max: 365
+    step: 1
+    mode: box
+    icon: mdi:fire
+  vocab_plan_day:
+    name: "计划第几天"
+    min: 1
+    max: 48
+    step: 1
+    mode: box
+    icon: mdi:numeric
+  vocab_today_new:
+    name: "今日新词数"
+    min: 0
+    max: 100
+    step: 1
+    mode: box
+    icon: mdi:book-plus
+  vocab_today_wrong:
+    name: "今日错词数"
+    min: 0
+    max: 100
+    step: 1
+    mode: box
+    icon: mdi:close-circle
+  vocab_total_learned:
+    name: "累计词汇量"
+    min: 0
+    max: 9999
+    step: 10
+    mode: box
+    icon: mdi:counter
+
+input_datetime:
+  vocab_last_checkin:
+    name: "最后打卡时间"
+    has_date: true
+    has_time: true
+
+sensor:
+  - platform: template
+    sensors:
+      vocab_daily_progress:
+        friendly_name: "今日完成率"
+        unit_of_measurement: "%"
+        value_template: >-
+          {% set m = states("input_boolean.vocab_morning_done") == "on" %}
+          {% set e = states("input_boolean.vocab_evening_done") == "on" %}
+          {{ (1 if m else 0 + 1 if e else 0) * 50 }}
+        icon_template: >-
+          {% if states("sensor.vocab_daily_progress") | int >= 100 %}
+            mdi:check-circle
+          {% elif states("sensor.vocab_daily_progress") | int > 0 %}
+            mdi:progress-check
+          {% else %}
+            mdi:progress-close
+          {% endif %}
+
+      vocab_plan_progress:
+        friendly_name: "48天计划进度"
+        unit_of_measurement: "%"
+        value_template: "{{ (states('input_number.vocab_plan_day') | int(1) / 48 * 100) | round(0) }}"
+
+      vocab_review_total:
+        friendly_name: "今日复习总数"
+        unit_of_measurement: "词"
+        value_template: >-
+          {% set d = states('input_number.vocab_plan_day') | int(1) %}
+          {% set ns = namespace(count=0) %}
+          {% if d - 1 >= 1 %}{% set ns.count = ns.count + 50 %}{% endif %}
+          {% if d - 2 >= 1 %}{% set ns.count = ns.count + 50 %}{% endif %}
+          {% if d - 4 >= 1 %}{% set ns.count = ns.count + 50 %}{% endif %}
+          {% if d - 7 >= 1 %}{% set ns.count = ns.count + 50 %}{% endif %}
+          {% if d - 15 >= 1 %}{% set ns.count = ns.count + 50 %}{% endif %}
+          {% if d - 30 >= 1 %}{% set ns.count = ns.count + 50 %}{% endif %}
+          {{ ns.count }}
+        icon_template: mdi:book-refresh
+
+      vocab_r1_review:
+        friendly_name: "R1 (1天前)"
+        value_template: >-
+          {% set d = states('input_number.vocab_plan_day') | int(1) %}
+          {% set r = d - 1 %}
+          {% if r >= 1 %}复习 Day {{ r }}{% else %}—{% endif %}
+      vocab_r2_review:
+        friendly_name: "R2 (2天前)"
+        value_template: >-
+          {% set d = states('input_number.vocab_plan_day') | int(1) %}
+          {% set r = d - 2 %}
+          {% if r >= 1 %}复习 Day {{ r }}{% else %}—{% endif %}
+      vocab_r3_review:
+        friendly_name: "R3 (4天前)"
+        value_template: >-
+          {% set d = states('input_number.vocab_plan_day') | int(1) %}
+          {% set r = d - 4 %}
+          {% if r >= 1 %}复习 Day {{ r }}{% else %}—{% endif %}
+      vocab_r4_review:
+        friendly_name: "R4 (7天前)"
+        value_template: >-
+          {% set d = states('input_number.vocab_plan_day') | int(1) %}
+          {% set r = d - 7 %}
+          {% if r >= 1 %}复习 Day {{ r }}{% else %}—{% endif %}
+      vocab_r5_review:
+        friendly_name: "R5 (15天前)"
+        value_template: >-
+          {% set d = states('input_number.vocab_plan_day') | int(1) %}
+          {% set r = d - 15 %}
+          {% if r >= 1 %}复习 Day {{ r }}{% else %}—{% endif %}
+      vocab_r6_review:
+        friendly_name: "R6 (30天前)"
+        value_template: >-
+          {% set d = states('input_number.vocab_plan_day') | int(1) %}
+          {% set r = d - 30 %}
+          {% if r >= 1 %}复习 Day {{ r }}{% else %}—{% endif %}
+
+automation:
+  - alias: "词汇学习 - 早晨提醒"
+    trigger:
+      - platform: time
+        at: "07:00:00"
+    action:
+      - service: notify.notify
+        data:
+          title: "背单词啦！"
+          message: "早上好！今天计划第 {{ states('input_number.vocab_plan_day') | int(1) }} 天，50 个新词+复习"
+    mode: single
+
+  - alias: "词汇学习 - 傍晚提醒"
+    trigger:
+      - platform: time
+        at: "17:00:00"
+    action:
+      - service: notify.notify
+        data:
+          title: "阅读时间到"
+          message: "做阅读理解+听力训练，复习早上的错词"
+    mode: single
+
+  - alias: "词汇学习 - 每日重置"
+    trigger:
+      - platform: time
+        at: "00:05:00"
+    action:
+      - service: input_boolean.turn_off
+        target:
+          entity_id:
+            - input_boolean.vocab_morning_done
+            - input_boolean.vocab_evening_done
+      - service: input_number.set_value
+        target:
+          entity_id: input_number.vocab_plan_day
+        data:
+          value: "{{ [states('input_number.vocab_plan_day') | int(1) + 1, 48] | min }}"
+    mode: single
+
+  - alias: "词汇学习 - 更新打卡"
+    trigger:
+      - platform: state
+        entity_id: input_boolean.vocab_evening_done
+        to: "on"
+    condition:
+      - condition: state
+        entity_id: input_boolean.vocab_morning_done
+        state: "on"
+    action:
+      - service: input_number.set_value
+        target:
+          entity_id: input_number.vocab_streak_days
+        data:
+          value: "{{ (states('input_number.vocab_streak_days') | int(0)) + 1 }}"
+      - service: input_datetime.set_datetime
+        target:
+          entity_id: input_datetime.vocab_last_checkin
+        data:
+          timestamp: "{{ now().timestamp() | int }}"
+      - service: notify.notify
+        data:
+          title: "打卡完成！"
+          message: "连续第 {{ (states('input_number.vocab_streak_days') | int(0)) + 1 }} 天！"
+    mode: single
+
+  - alias: "词汇学习 - 晚间督促"
+    trigger:
+      - platform: time
+        at: "22:00:00"
+    condition:
+      condition: or
+      conditions:
+        - condition: state
+          entity_id: input_boolean.vocab_morning_done
+          state: "off"
+        - condition: state
+          entity_id: input_boolean.vocab_evening_done
+          state: "off"
+    action:
+      - service: notify.notify
+        data:
+          title: "今日未完成"
+          message: "单词还没背完，睡前抽10分钟过一遍"
+    mode: single
