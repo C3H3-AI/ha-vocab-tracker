@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { ref, computed, onMounted } from 'vue'
 import { loadData, saveData } from '../utils/storage'
-import { BASE_INTERVALS } from '../utils/ebbinghaus'
+import { DEFAULT_INTERVALS, getIntervals, setIntervals, resetIntervals, loadIntervalsFromData } from '../utils/ebbinghaus'
 import StudyHeatmap from './StudyHeatmap.vue'
 
 const props = defineProps<{ appData: any }>()
@@ -175,6 +175,31 @@ function handleReset() {
 
     <!-- Study Heatmap -->
     <StudyHeatmap :dailyMinutes="data.dailyMinutes || {}" />
+
+    <!-- Ebbinghaus Settings -->
+    <div class="settings-section">
+      <button class="btn-settings" @click="showSettings = !showSettings">
+        ⚙️ 艾宾浩斯间隔设置
+        <span class="toggle-arrow">{{ showSettings ? '▲' : '▼' }}</span>
+      </button>
+
+      <div v-if="showSettings" class="settings-body">
+        <p class="settings-desc">设置复习间隔天数（每轮逐渐增长，至少 3 轮）</p>
+        <div class="interval-list">
+          <div v-for="(v, i) in intervalInputs" :key="i" class="interval-row">
+            <span class="interval-label">第 {{ i + 1 }} 轮</span>
+            <input type="number" v-model.number="intervalInputs[i]" min="1" max="90" class="interval-input" />
+            <span class="interval-unit">天</span>
+            <button v-if="i === intervalInputs.length - 1" class="btn-add" @click="intervalInputs.push(7)">+</button>
+            <button v-if="intervalInputs.length > 3" class="btn-remove" @click="intervalInputs.splice(i, 1)">✕</button>
+          </div>
+        </div>
+        <div class="settings-actions">
+          <button class="btn-save" @click="saveIntervals()">保存</button>
+          <button class="btn-reset-small" @click="resetToDefault()">恢复默认</button>
+        </div>
+      </div>
+    </div>
 
     <!-- Footer -->
     <div class="info-row">
@@ -405,4 +430,114 @@ function handleReset() {
 .btn-reset:hover {
   background: #fff2f0;
 }
+
+/* Settings Section */
+.settings-section {
+  margin-bottom: 20px;
+}
+.btn-settings {
+  width: 100%;
+  padding: 12px 16px;
+  background: white;
+  border: 1px solid #e8e8e8;
+  border-radius: 10px;
+  font-size: 14px;
+  cursor: pointer;
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  color: #555;
+  transition: all 0.15s;
+}
+.btn-settings:hover {
+  border-color: #4a90d9;
+  color: #4a90d9;
+}
+.toggle-arrow {
+  font-size: 12px;
+  color: #999;
+}
+.settings-body {
+  margin-top: 10px;
+  padding: 16px;
+  background: #fafbfc;
+  border: 1px solid #e8e8e8;
+  border-radius: 10px;
+}
+.settings-desc {
+  font-size: 12px;
+  color: #888;
+  margin-bottom: 12px;
+}
+.interval-list {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  margin-bottom: 14px;
+}
+.interval-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+.interval-label {
+  font-size: 13px;
+  color: #555;
+  min-width: 60px;
+}
+.interval-input {
+  width: 60px;
+  padding: 6px 8px;
+  border: 1px solid #ddd;
+  border-radius: 6px;
+  font-size: 14px;
+  text-align: center;
+}
+.interval-unit {
+  font-size: 12px;
+  color: #999;
+}
+.btn-add {
+  padding: 2px 8px;
+  border: 1px solid #52c41a;
+  border-radius: 4px;
+  background: white;
+  color: #52c41a;
+  font-size: 14px;
+  cursor: pointer;
+}
+.btn-remove {
+  padding: 2px 6px;
+  border: 1px solid #ff4d4f;
+  border-radius: 4px;
+  background: white;
+  color: #ff4d4f;
+  font-size: 12px;
+  cursor: pointer;
+}
+.settings-actions {
+  display: flex;
+  gap: 10px;
+}
+.btn-save {
+  flex: 1;
+  padding: 10px;
+  background: #4a90d9;
+  color: white;
+  border: none;
+  border-radius: 8px;
+  font-size: 14px;
+  cursor: pointer;
+}
+.btn-save:hover { background: #357abd; }
+.btn-reset-small {
+  padding: 10px 16px;
+  background: white;
+  border: 1px solid #e0e0e0;
+  border-radius: 8px;
+  font-size: 13px;
+  color: #666;
+  cursor: pointer;
+}
+.btn-reset-small:hover { border-color: #999; }
 </style>

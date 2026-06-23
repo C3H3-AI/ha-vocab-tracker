@@ -1,7 +1,7 @@
 import type { WordRecord } from '../types/vocab'
 
 /** 基础间隔 (天) - 用于 "认识" 评级 */
-export const BASE_INTERVALS = [1, 2, 4, 7, 15, 30]
+export const DEFAULT_INTERVALS = [1, 2, 4, 7, 15, 30]
 
 /** 模糊的间隔因子 - 间隔减半 */
 const FUZZY_FACTOR = 0.5
@@ -9,24 +9,46 @@ const FUZZY_FACTOR = 0.5
 /** 忘记的间隔因子 - 回到第1轮 */
 const FORGOT_RESET = true
 
+// 当前生效的间隔配置（可从 storage 覆盖）
+let currentIntervals = [...DEFAULT_INTERVALS]
+
+/** 设置自定义间隔 */
+export function setIntervals(intervals: number[]): void {
+  currentIntervals = intervals
+}
+
+/** 重置为默认间隔 */
+export function resetIntervals(): void {
+  currentIntervals = [...DEFAULT_INTERVALS]
+}
+
+/** 获取当前间隔配置 */
+export function getIntervals(): number[] {
+  return currentIntervals
+}
+
+/** 从 AppData 加载间隔配置 */
+export function loadIntervalsFromData(data: { ebbinghausIntervals?: number[] }): void {
+  if (data.ebbinghausIntervals && data.ebbinghausIntervals.length > 0) {
+    currentIntervals = data.ebbinghausIntervals
+  }
+}
+
 export function getNextReviewInterval(
   reviewCount: number,
   rating: 'known' | 'fuzzy' | 'forgot'
 ): number {
   if (rating === 'forgot') {
-    // 忘记: 重置到第1轮间隔
-    return BASE_INTERVALS[0]
+    return currentIntervals[0]
   }
 
-  const idx = Math.min(reviewCount, BASE_INTERVALS.length - 1)
-  const base = BASE_INTERVALS[idx]
+  const idx = Math.min(reviewCount, currentIntervals.length - 1)
+  const base = currentIntervals[idx]
 
   if (rating === 'fuzzy') {
-    // 模糊: 间隔减半
     return Math.max(1, Math.round(base * FUZZY_FACTOR))
   }
 
-  // 认识: 正常间隔
   return base
 }
 
@@ -62,7 +84,7 @@ export function createWordRecord(word: string): WordRecord {
     word,
     status: 'learning',
     reviewCount: 0,
-    nextReview: now + BASE_INTERVALS[0] * 24 * 60 * 60 * 1000,
+    nextReview: now + currentIntervals[0] * 24 * 60 * 60 * 1000,
     lastReview: now,
     wrongCount: 0,
     recentRatings: [],

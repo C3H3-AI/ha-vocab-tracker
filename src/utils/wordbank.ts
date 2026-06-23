@@ -8,21 +8,24 @@ export interface WordBookMeta {
   wordsPerDay: number
   totalDays: number
   color: string
+  /** 实际文件名（不含.json），默认等于 id */
+  fileName?: string
 }
 
 export const AVAILABLE_BOOKS: WordBookMeta[] = [
   { id: 'primary', name: '小学词汇', description: '人教版同步', wordCount: 1334, wordsPerDay: 50, totalDays: 27, color: '#ff85c0' },
-  { id: 'chuzhong', name: '初中词汇', description: '中考必背', wordCount: 1600, wordsPerDay: 50, totalDays: 32, color: '#52c41a' },
+  { id: 'junior', name: '初中词汇', description: '中考必背', wordCount: 1600, wordsPerDay: 50, totalDays: 32, color: '#52c41a', fileName: 'junior' },
   { id: 'gaokao-3500', name: '高考核心3500', description: '100句记完3500词', wordCount: 3866, wordsPerDay: 50, totalDays: 78, color: '#1890ff' },
   { id: 'gaokao-24days', name: '24天突破高考', description: '高考大纲3500', wordCount: 2528, wordsPerDay: 50, totalDays: 51, color: '#13c2c2' },
   { id: 'gaokao-core-20days', name: '20天背完高考核心', description: '高考核心词汇', wordCount: 2411, wordsPerDay: 50, totalDays: 49, color: '#722ed1' },
   { id: 'gaokao-michael', name: '高考词群速记', description: 'Michael词群记词', wordCount: 4378, wordsPerDay: 50, totalDays: 88, color: '#eb2f96' },
-  { id: 'gaozhong', name: '高中词汇', description: '高考必背', wordCount: 2400, wordsPerDay: 50, totalDays: 48, color: '#4a90d9' },
+  { id: 'senior', name: '高中词汇', description: '高考必背', wordCount: 2400, wordsPerDay: 50, totalDays: 48, color: '#4a90d9', fileName: 'senior' },
   { id: 'cet4', name: 'CET-4', description: '大学英语四级', wordCount: 2800, wordsPerDay: 50, totalDays: 56, color: '#faad14' },
   { id: 'cet6', name: 'CET-6', description: '大学英语六级', wordCount: 3500, wordsPerDay: 50, totalDays: 70, color: '#e67e22' },
   { id: 'kaoyan', name: '考研英语', description: '研究生入学考试', wordCount: 2800, wordsPerDay: 50, totalDays: 56, color: '#e74c3c' },
   { id: 'toefl', name: 'TOEFL', description: '托福考试', wordCount: 4000, wordsPerDay: 50, totalDays: 80, color: '#9b59b6' },
   { id: 'sat', name: 'SAT', description: '美国高考', wordCount: 3000, wordsPerDay: 50, totalDays: 60, color: '#1abc9c' },
+  { id: 'postgraduate', name: '研究生英语', description: '硕博入学考试', wordCount: 3000, wordsPerDay: 50, totalDays: 60, color: '#fa541c' },
 ]
 
 export const BOOK_MAP = new Map(AVAILABLE_BOOKS.map(b => [b.id, b]))
@@ -31,7 +34,7 @@ const bankCache = new Map<string, VocabWord[]>()
 const WORD_BANK_BASE = '/local/vocab/wordbank'
 
 export function getDefaultBook(): string {
-  return 'gaozhong'
+  return 'senior'
 }
 
 export function getBookById(id: string): WordBookMeta | undefined {
@@ -42,15 +45,19 @@ export async function loadWordBank(bookId: string): Promise<VocabWord[]> {
   const cached = bankCache.get(bookId)
   if (cached) return cached
 
+  // 使用 fileName 映射（默认等于 id）
+  const meta = BOOK_MAP.get(bookId)
+  const fileName = meta?.fileName || bookId
+
   try {
-    const url = `${WORD_BANK_BASE}/${bookId}.json`
+    const url = `${WORD_BANK_BASE}/${fileName}.json`
     const resp = await fetch(url)
     if (!resp.ok) throw new Error(`HTTP ${resp.status}`)
     const data: VocabWord[] = await resp.json()
     bankCache.set(bookId, data)
     return data
   } catch (e) {
-    console.warn(`Failed to load word bank "${bookId}", using fallback`, e)
+    console.warn(`Failed to load word bank "${bookId}" (${fileName}.json), using fallback`, e)
     const fallback = getFallbackBank()
     bankCache.set(bookId, fallback)
     return fallback

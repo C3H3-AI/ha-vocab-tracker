@@ -2,18 +2,26 @@
 import { ref, computed } from 'vue'
 import { loadData, saveData } from '../utils/storage'
 import { applyRating } from '../utils/ebbinghaus'
-import { getWordsForDay } from '../utils/wordbank'
+import { getWordsForDay, getDefaultBook } from '../utils/wordbank'
 import type { VocabWord } from '../types/vocab'
 
 const data = ref(loadData())
 
 // Get current book's wrong words
-const bookId = computed(() => data.value.currentWordBook || 'gaozhong')
+const bookId = computed(() => data.value.currentWordBook || getDefaultBook())
 const progress = computed(() => data.value.bookProgress?.[bookId.value])
 const wrongWordsList = computed(() => {
   const wrong = data.value.wrongWords || {}
+  const bank = (window as any).__currentWordBank as VocabWord[] | undefined
+  const bankWords = bank ? new Set(bank.map(w => w.word)) : null
+  
   return Object.entries(wrong)
-    .filter(([_, count]) => count > 0)
+    .filter(([word, count]) => {
+      if (count <= 0) return false
+      // 过滤：仅显示当前词库的错词
+      if (bankWords && !bankWords.has(word)) return false
+      return true
+    })
     .sort((a, b) => b[1] - a[1])
 })
 

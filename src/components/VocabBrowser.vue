@@ -38,7 +38,7 @@ async function loadCurrentBookFromCache() {
     return
   }
   
-  // Try loading from book list - default to gaozhong
+  // Try loading from book list - pick first available
   for (const book of AVAILABLE_BOOKS) {
     try {
       const words = await loadWordBank(book.id)

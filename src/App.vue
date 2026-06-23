@@ -90,16 +90,27 @@ function getDayProgress(): number {
   return Math.min(100, Math.round(total / target * 100))
 }
 
-const tabs = [
+const MAIN_TABS = [
   { id: 'study', label: '学习', icon: '📖' },
   { id: 'review', label: '复习', icon: '🔄' },
   { id: 'test', label: '测试', icon: '📝' },
+  { id: 'stats', label: '统计', icon: '📊' },
+  { id: 'more', label: '更多', icon: '📋' },
+]
+
+const MORE_TABS = [
   { id: 'wrong', label: '错词本', icon: '📕' },
   { id: 'browse', label: '词库', icon: '📚' },
-  { id: 'stats', label: '统计', icon: '📊' },
-  { id: 'books', label: '单词书', icon: '📚' },
+  { id: 'books', label: '单词书', icon: '📖' },
   { id: 'print', label: '打印', icon: '🖨️' },
 ]
+
+const showMoreDrawer = ref(false)
+
+function openMoreTab(tabId: string) {
+  activeTab.value = tabId
+  showMoreDrawer.value = false
+}
 </script>
 
 <template>
@@ -124,7 +135,7 @@ const tabs = [
       </div>
 
       <nav class="sidebar-nav">
-        <button v-for="t in tabs" :key="t.id"
+        <button v-for="t in [...MAIN_TABS.slice(0, -1), ...MORE_TABS]" :key="t.id"
           :class="['sidebar-btn', { active: activeTab === t.id }]"
           @click="activeTab = t.id">
           <span class="sidebar-icon">{{ t.icon }}</span>
@@ -206,13 +217,31 @@ const tabs = [
 
       <!-- Mobile Bottom Nav -->
       <nav class="bottom-nav" v-if="isMobile">
-        <button v-for="t in tabs" :key="t.id"
-          :class="['nav-btn', { active: activeTab === t.id }]"
-          @click="activeTab = t.id">
+        <button v-for="t in MAIN_TABS" :key="t.id"
+          :class="['nav-btn', { active: activeTab === t.id && t.id !== 'more' }]"
+          @click="t.id === 'more' ? toggleMoreDrawer() : (activeTab = t.id)">
           <span class="nav-icon">{{ t.icon }}</span>
           <span class="nav-label">{{ t.label }}</span>
         </button>
       </nav>
+
+      <!-- More Drawer (Mobile) -->
+      <transition name="drawer">
+        <div v-if="showMoreDrawer" class="drawer-overlay" @click="showMoreDrawer = false">
+          <div class="drawer-content" @click.stop>
+            <div class="drawer-header">
+              <h3>更多功能</h3>
+              <button class="drawer-close" @click="showMoreDrawer = false">✕</button>
+            </div>
+            <div class="drawer-grid">
+              <button v-for="t in MORE_TABS" :key="t.id" class="drawer-item" @click="openMoreTab(t.id)">
+                <span class="drawer-icon">{{ t.icon }}</span>
+                <span class="drawer-label">{{ t.label }}</span>
+              </button>
+            </div>
+          </div>
+        </div>
+      </transition>
     </div>
   </div>
 </template>
@@ -515,4 +544,71 @@ body {
     width: 100%;
   }
 }
+
+/* More Drawer */
+.drawer-overlay {
+  position: fixed;
+  inset: 0;
+  background: rgba(0,0,0,0.4);
+  z-index: 100;
+  display: flex;
+  align-items: flex-end;
+  justify-content: center;
+}
+.drawer-content {
+  width: 100%;
+  max-width: 400px;
+  background: white;
+  border-radius: 16px 16px 0 0;
+  padding: 20px 16px 30px;
+  animation: slideUp 0.2s ease;
+}
+@keyframes slideUp {
+  from { transform: translateY(100%); }
+  to { transform: translateY(0); }
+}
+.drawer-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-bottom: 16px;
+}
+.drawer-header h3 {
+  font-size: 16px;
+  color: #333;
+}
+.drawer-close {
+  background: none;
+  border: none;
+  font-size: 20px;
+  color: #999;
+  cursor: pointer;
+  padding: 4px;
+}
+.drawer-grid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 10px;
+}
+.drawer-item {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 6px;
+  padding: 16px 10px;
+  background: #f8f9fa;
+  border: 1px solid #eee;
+  border-radius: 12px;
+  cursor: pointer;
+  transition: all 0.15s;
+}
+.drawer-item:hover {
+  background: #f0f7ff;
+  border-color: #4a90d9;
+}
+.drawer-icon { font-size: 28px; }
+.drawer-label { font-size: 13px; color: #555; font-weight: 500; }
+
+.drawer-enter-active, .drawer-leave-active { transition: opacity 0.2s; }
+.drawer-enter-from, .drawer-leave-to { opacity: 0; }
 </style>

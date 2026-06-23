@@ -40,6 +40,80 @@ export function getStorageKey(): string {
   return user.id === 'local' ? BASE_KEY : `${BASE_KEY}_${user.id}`
 }
 
+// ─── HA Cloud Sync ─────────────────────────────────────
+
+const SYNC_ENTITY_BASE = 'sensor.vocab_tracker'
+
+function getHass(): any | null {
+  try {
+    return (window.parent as any)?.hass || null
+  } catch { return null }
+}
+
+export function isHAConnected(): boolean {
+  return !!getHass()?.user?.id
+}
+
+/** Push data to HA as sensor state (cloud backup) */
+export async function pushToHA(data: AppData): Promise<boolean> {
+  const user = getCurrentUser()
+  if (user.id === 'local') return false
+
+  const hass = getHass()
+  if (!hass) return false
+
+  try {
+    // Store as HA state attribute
+    const entityId = `${SYNC_ENTITY_BASE}_${user.id}`
+    const payload = {
+      state: 'stored',
+      attributes: {
+        friendly_name: `词汇学习 - ${user.name}`,
+        data: JSON.stringify(data),
+        updated_at: new Date().toISOString(),
+        user_id: user.id
+      }
+    }
+    await hass.callApi('POST', `/api/states/${entityId}`, payload)
+    return true
+  } catch (e) {
+    console.warn('HA sync failed (silent)', e)
+    return false
+  }
+}
+
+/** Pull data from HA sensor state */
+export async function pullFromHA(): Promise<AppData | null> {
+  const user = getCurrentUser()
+  if (user.id === 'local') return null
+
+  const hass = getHass()
+  if (!hass) return null
+
+  try {
+    const entityId = `${SYNC_ENTITY_BASE}_${user.id}`
+    const state = await hass.callApi('GET', `/api/states/${entityId}`)
+    if (state?.attributes?.data) {
+      return JSON.parse(state.attributes.data) as AppData
+    }
+  } catch { /* not found — first use */ }
+  return null
+}
+
+// ─── Main Storage ──────────────────────────────────────
+
+export async function loadDataAsync(): Promise<AppData> {
+  // Try HA cloud first
+  const cloud = await pullFromHA()
+  if (cloud) {
+    // Sync to localStorage
+    const key = getStorageKey()
+    localStorage.setItem(key, JSON.stringify(cloud))
+    return cloud
+  }
+  return loadData()
+}
+
 export function loadData(): AppData {
   try {
     const key = getStorageKey()
@@ -70,6 +144,14 @@ export function loadData(): AppData {
     console.warn('Failed to load data, resetting', e)
   }
   return getDefaultData()
+}
+
+export async function saveDataAsync(data: AppData): Promise<void> {
+  saveData(data)
+  // Fire-and-forget HA sync
+  pushToHA(data).then(synced => {
+    if (synced) console.log('HA cloud sync OK')
+  })
 }
 
 export function saveData(data: AppData): void {
