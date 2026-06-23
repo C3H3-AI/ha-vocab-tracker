@@ -1,637 +1,232 @@
 <script setup lang="ts">
 import { ref, computed, onMounted } from 'vue'
-import { getDueReviews, applyRating, generateDistractors } from '../utils/ebbinghaus'
-import { getWordsForDay } from '../utils/wordbank'
+import { getDueReviews, applyRating, createWordRecord, getQualityFromRating } from '../utils/ebbinghaus'
 import { loadData, saveData } from '../utils/storage'
+import { speakWordFire, initSpeech, isSpeechSupported } from '../utils/speech'
 import type { VocabWord, WordRecord } from '../types/vocab'
 
 const props = defineProps<{ appData: any; bookId?: string }>()
 const emit = defineEmits<{ update: [data: any] }>()
 
 const data = ref({ ...props.appData, records: { ...props.appData.records } })
+const speechSupported = ref(false)
 
-// Review state
-const phase = ref<'select' | 'playing' | 'done'>('select')
-const mode = ref<'choice' | 'spell' | 'speed' | 'listen'>('choice')
-const reviewWords = ref<WordRecord[]>([])
-const reviewVocabWords = ref<VocabWord[]>([])
+// State
+const phase = ref<'ready' | 'review' | 'done'>('ready')
+const reviewQueue = ref<VocabWord[]>([])
 const currentIdx = ref(0)
-const correctCount = ref(0)
-const wrongCount = ref(0)
-const userInput = ref('')
+const isFlipped = ref(false)
 const showAnswer = ref(false)
-const feedback = ref<'correct' | 'wrong' | null>(null)
-const choices = ref<string[]>([])
-const selectedChoice = ref('')
-const saidCount = ref(0)
 
-// Speech synthesis
-function playCurrentWord() {
-  if (!currentWord.value) return
-  const utterance = new SpeechSynthesisUtterance(currentWord.value.word)
-  utterance.lang = 'en-US'
-  utterance.rate = 0.85
-  utterance.pitch = 1
-  speechSynthesis.cancel()
-  speechSynthesis.speak(utterance)
-  saidCount.value++
-}
+const results = ref<Array<{ word: VocabWord; quality: number }>>([])
+const startTime = ref(0)
 
-const totalCount = computed(() => reviewVocabWords.value.length)
-const currentWord = computed(() => reviewVocabWords.value[currentIdx.value] || null)
-const currentRecord = computed(() => {
-  if (!currentWord.value) return null
-  return data.value.records[currentWord.value.word] || null
-})
-const progress = computed(() => {
-  if (totalCount.value === 0) return 0
-  return Math.round((currentIdx.value / totalCount.value) * 100)
-})
-
-const ALL_WORDS = ref<Array<{ word: string; meaning: string }>>([])
+const currentWord = computed(() => reviewQueue.value[currentIdx.value] || null)
+const isLast = computed(() => currentIdx.value >= reviewQueue.value.length - 1)
+const dueCount = computed(() => getDueReviews(data.value.records).length)
 
 onMounted(() => {
+  initSpeech()
+  speechSupported.value = isSpeechSupported()
   loadReviews()
 })
 
 function loadReviews() {
+  const bank = (window as any).__currentWordBank as VocabWord[] | undefined
+  if (!bank) return
+  const wordMap = new Map(bank.map(w => [w.word, w]))
   const due = getDueReviews(data.value.records)
-  const wordMap = new Map<string, VocabWord>()
-  
-  const bank = (window as any).__currentWordBank
-  if (bank && Array.isArray(bank)) {
-    bank.forEach((w: VocabWord) => wordMap.set(w.word, w))
-  } else {
-    // Fallback: try loading from wordbank days
-    for (let d = 1; d <= 48; d++) {
-      getWordsForDay([], d, 50).forEach((w: VocabWord) => wordMap.set(w.word, w))
-    }
-  }
-  
-  reviewWords.value = due
-  reviewVocabWords.value = due
+  reviewQueue.value = due
     .map(r => wordMap.get(r.word))
     .filter((w): w is VocabWord => !!w)
-  
-  // Build all words list for distractors
-  ALL_WORDS.value = Array.from(wordMap.values()).map(w => ({
-    word: w.word,
-    meaning: w.meaning
-  }))
 }
 
-function setMode(m: 'choice' | 'spell' | 'speed' | 'listen') {
-  mode.value = m
-  phase.value = 'playing'
+function startReview() {
+  phase.value = 'review'
   currentIdx.value = 0
-  correctCount.value = 0
-  wrongCount.value = 0
-  nextWord()
+  results.value = []
+  startTime.value = Date.now()
+  isFlipped.value = false
 }
 
-function nextWord() {
-  if (currentIdx.value >= totalCount.value) {
-    phase.value = 'done'
-    saveData(data.value)
-    emit('update', data.value)
+function flipCard() { isFlipped.value = true; speakCurrent() }
+function speakCurrent() {
+  if (currentWord.value && speechSupported.value) {
+    speakWordFire(currentWord.value.word, { rate: 0.7 })
+  }
+}
+
+function rateWord(rating: 'known' | 'fuzzy' | 'forgot') {
+  if (!currentWord.value) return
+
+  const quality = getQualityFromRating(rating)
+  results.value.push({ word: currentWord.value, quality })
+
+  if (isLast.value) {
+    finishReview()
     return
   }
-  showAnswer.value = false
-  feedback.value = null
-  userInput.value = ''
-  selectedChoice.value = ''
-  saidCount.value = 0
-  
-  if (mode.value === 'choice') {
-    generateChoices()
-  }
-}
 
-function generateChoices() {
-  if (!currentWord.value) return
-  const distractors = generateDistractors(currentWord.value.meaning, ALL_WORDS.value, 3)
-  const all = [currentWord.value.meaning, ...distractors]
-  choices.value = all.sort(() => Math.random() - 0.5)
-}
-
-function selectChoice(choice: string) {
-  if (feedback.value) return
-  selectedChoice.value = choice
-  showAnswer.value = true
-  
-  if (choice === currentWord.value?.meaning) {
-    feedback.value = 'correct'
-    correctCount.value++
-  } else {
-    feedback.value = 'wrong'
-    wrongCount.value++
-  }
-}
-
-function checkSpelling() {
-  if (!currentWord.value) return
-  showAnswer.value = true
-  const correct = userInput.value.trim().toLowerCase() === currentWord.value.word.toLowerCase()
-  
-  if (correct) {
-    feedback.value = 'correct'
-    correctCount.value++
-  } else {
-    feedback.value = 'wrong'
-    wrongCount.value++
-  }
-}
-
-function handleKnown() {
-  feedback.value = 'correct'
-  correctCount.value++
-  showAnswer.value = true
-}
-
-function handleForgot() {
-  feedback.value = 'wrong'
-  wrongCount.value++
-  showAnswer.value = true
-}
-
-function nextReview() {
+  isFlipped.value = false
   currentIdx.value++
-  nextWord()
+  setTimeout(speakCurrent, 200)
 }
 
-function restart() {
-  phase.value = 'select'
+function skipWord() {
+  if (!currentWord.value) return
+  results.value.push({ word: currentWord.value, quality: 0 })
+  if (isLast.value) { finishReview(); return }
+  isFlipped.value = false
+  currentIdx.value++
 }
 
-function formatDate(ts: number): string {
-  const d = new Date(ts)
-  const h = d.getHours().toString().padStart(2, '0')
-  const m = d.getMinutes().toString().padStart(2, '0')
-  return `${d.getMonth() + 1}/${d.getDate()} ${h}:${m}`
+function finishReview() {
+  phase.value = 'done'
+  const now = Date.now()
+
+  results.value.forEach(r => {
+    const existing = data.value.records[r.word.word] || createWordRecord(r.word.word)
+    const studySec = Math.round((now - startTime.value) / Math.max(1, results.value.length))
+    const updated = applyRating(existing, r.quality, studySec)
+    data.value.records[r.word.word] = updated
+  })
+
+  saveData(data.value)
+  emit('update', data.value)
 }
 
-function getAccuracy(): string {
-  const total = correctCount.value + wrongCount.value
-  if (total === 0) return '0%'
-  return Math.round((correctCount.value / total) * 100) + '%'
+function getPassCount() {
+  return results.value.filter(r => r.quality >= 3).length
+}
+
+function getFailCount() {
+  return results.value.filter(r => r.quality < 3).length
 }
 </script>
 
 <template>
   <div class="review-view">
-    <!-- MODE SELECT -->
-    <template v-if="phase === 'select'">
-      <div class="select-screen">
-        <div class="select-icon">🔄</div>
-        <h2>选择复习模式</h2>
-        <p class="select-subtitle">
-          今日需复习 <strong>{{ totalCount }}</strong> 个词
-        </p>
-
-        <div class="mode-list">
-          <div class="mode-card" @click="setMode('choice')">
-            <div class="mode-icon">📝</div>
-            <div class="mode-info">
-              <div class="mode-name">选择题模式</div>
-              <div class="mode-desc">从四个选项中选出正确释义</div>
-            </div>
-          </div>
-          <div class="mode-card" @click="setMode('spell')">
-            <div class="mode-icon">✏️</div>
-            <div class="mode-info">
-              <div class="mode-name">拼写模式</div>
-              <div class="mode-desc">看中文释义，拼写出完整单词</div>
-            </div>
-          </div>
-          <div class="mode-card" @click="setMode('speed')">
-            <div class="mode-icon">⚡</div>
-            <div class="mode-info">
-              <div class="mode-name">快速刷词</div>
-              <div class="mode-desc">快速过一遍，认识/不认识</div>
-            </div>
-          </div>
-          <div class="mode-card" @click="setMode('listen')">
-            <div class="mode-icon">🔊</div>
-            <div class="mode-info">
-              <div class="mode-name">听音拼写</div>
-              <div class="mode-desc">听发音→拼写，锻炼听力+拼写</div>
-            </div>
-          </div>
+    <!-- READY -->
+    <template v-if="phase === 'ready'">
+      <div class="ready-section">
+        <div class="ready-icon">🔄</div>
+        <h2>到期复习</h2>
+        <p class="ready-sub" v-if="dueCount > 0">有 {{ dueCount }} 个词需要复习</p>
+        <p class="ready-sub" v-else>暂无到期复习词 🎉</p>
+        <div class="ready-info" v-if="dueCount > 0">
+          <div>📈 到期依据: SM-2 间隔重复算法</div>
+          <div>⏱ 预计 {{ Math.ceil(dueCount / 10) }} 分钟</div>
         </div>
-        
-        <div class="review-count" v-if="totalCount === 0">
-          🎉 今日没有需要复习的词！<br>
-          <span class="hint">去学习新词吧</span>
-        </div>
+        <button v-if="dueCount > 0" class="btn-start" @click="startReview()">
+          开始复习 🚀
+        </button>
       </div>
     </template>
 
-    <!-- PLAYING -->
-    <template v-if="phase === 'playing'">
-      <div class="play-screen">
-        <!-- Progress -->
-        <div class="progress-bar-bg">
-          <div class="progress-bar-fill" :style="{ width: progress + '%' }"></div>
-        </div>
-        <div class="play-header">
-          <span class="score-correct">✓ {{ correctCount }}</span>
-          <span class="score-wrong">✗ {{ wrongCount }}</span>
-          <span class="play-count">{{ currentIdx + 1 }}/{{ totalCount }}</span>
+    <!-- REVIEW -->
+    <template v-if="phase === 'review'">
+      <div class="review-screen">
+        <div class="review-progress">
+          <div class="review-bar-bg">
+            <div class="review-bar-fill" :style="{ width: (currentIdx / reviewQueue.length * 100) + '%' }"></div>
+          </div>
+          <span class="review-count">{{ currentIdx + 1 }}/{{ reviewQueue.length }}</span>
         </div>
 
-        <!-- CHOICE MODE -->
-        <template v-if="mode === 'choice'">
-          <div class="choice-word">{{ currentWord?.word }}</div>
-          <div class="choice-phonetic" v-if="currentWord?.phonetic">/{{ currentWord.phonetic }}/</div>
-          <div class="choices">
-            <button
-              v-for="(c, i) in choices" :key="i"
-              :class="[
-                'choice-btn',
-                { selected: selectedChoice === c },
-                { correct: showAnswer && c === currentWord?.meaning },
-                { wrong: showAnswer && selectedChoice === c && c !== currentWord?.meaning }
-              ]"
-              @click="selectChoice(c)"
-              :disabled="showAnswer"
-            >
-              {{ c }}
-            </button>
-          </div>
-          <div class="feedback-row" v-if="showAnswer">
-            <div class="feedback correct" v-if="feedback === 'correct'">✅ 正确！</div>
-            <div class="feedback wrong" v-else>
-              ❌ 正确释义：<strong>{{ currentWord?.meaning }}</strong>
+        <div class="review-card-wrapper" @click="!isFlipped && flipCard()">
+          <div class="review-card" :class="{ flipped: isFlipped }">
+            <!-- Front -->
+            <div class="rf" v-show="!isFlipped">
+              <div class="rw">{{ currentWord?.word }}</div>
+              <div class="rp" v-if="currentWord?.phonetic">/{{ currentWord.phonetic }}/</div>
+              <div class="rhint">点击查看释义</div>
+              <button v-if="speechSupported" class="rb-speak" @click.stop="speakCurrent()">🔊</button>
             </div>
-            <button class="btn-next" @click="nextReview()" v-if="showAnswer">继续 →</button>
-          </div>
-        </template>
-
-        <!-- SPELL MODE -->
-        <template v-if="mode === 'spell'">
-          <div class="spell-hint">{{ currentWord?.meaning }}</div>
-          <div class="spell-pos" v-if="currentWord?.pos">{{ currentWord.pos }}</div>
-          <div class="spell-input-wrap">
-            <input
-              v-model="userInput"
-              class="spell-input"
-              :class="{ correct: feedback === 'correct', wrong: feedback === 'wrong' }"
-              placeholder="输入英文单词..."
-              @keyup.enter="!showAnswer && checkSpelling()"
-              :disabled="showAnswer"
-              autofocus
-            />
-          </div>
-          <div class="spell-actions" v-if="!showAnswer">
-            <button class="btn-check" @click="checkSpelling()">确认</button>
-          </div>
-          <div class="feedback-row" v-if="showAnswer">
-            <div class="feedback correct" v-if="feedback === 'correct'">✅ {{ currentWord?.word }} 拼写正确！</div>
-            <div class="feedback wrong" v-else>
-              ❌ 正确拼写：<strong>{{ currentWord?.word }}</strong>
-              <span v-if="currentWord?.phonetic" class="phonetic-hint"> /{{ currentWord.phonetic }}/</span>
-            </div>
-            <button class="btn-next" @click="nextReview()">继续 →</button>
-          </div>
-        </template>
-
-        <!-- SPEED MODE -->
-        <template v-if="mode === 'speed'">
-          <div class="speed-card" v-if="!showAnswer">
-            <div class="speed-word">{{ currentWord?.word }}</div>
-            <div class="speed-phonetic" v-if="currentWord?.phonetic">/{{ currentWord.phonetic }}/</div>
-            <div class="speed-actions">
-              <button class="btn-known" @click="handleKnown()">😊 认识</button>
-              <button class="btn-forgot" @click="handleForgot()">😅 不认识</button>
-            </div>
-          </div>
-          <div class="speed-reveal" v-else>
-            <div class="speed-word">{{ currentWord?.word }}</div>
-            <div class="speed-meaning">{{ currentWord?.meaning }}</div>
-            <div class="speed-sentence" v-if="currentWord?.sentences?.length">
-              {{ currentWord.sentences[0].en }}
-            </div>
-            <button class="btn-next" @click="nextReview()">继续 →</button>
-          </div>
-        </template>
-
-        <!-- LISTEN MODE -->
-        <template v-if="mode === 'listen'">
-          <div class="listen-section">
-            <div class="listen-hint">听发音，拼写出单词</div>
-            <div class="listen-play-section">
-              <button class="btn-listen" @click="playCurrentWord()" :disabled="!currentWord">
-                <span class="listen-icon">🔊</span>
-                <span>播放读音</span>
-              </button>
-              <div class="listen-said" v-if="saidCount > 0">已播放 {{ saidCount }} 次</div>
-            </div>
-            <div class="spell-input-wrap">
-              <input
-                v-model="userInput"
-                class="spell-input"
-                :class="{ correct: feedback === 'correct', wrong: feedback === 'wrong' }"
-                placeholder="输入听到的单词..."
-                @keyup.enter="!showAnswer && checkSpelling()"
-                :disabled="showAnswer"
-                autofocus
-              />
-            </div>
-            <div class="spell-actions" v-if="!showAnswer">
-              <button class="btn-check" @click="checkSpelling()">确认</button>
-            </div>
-            <div class="feedback-row" v-if="showAnswer">
-              <div class="feedback correct" v-if="feedback === 'correct'">✅ 听写正确！</div>
-              <div class="feedback wrong" v-else>
-                ❌ 正确拼写：<strong>{{ currentWord?.word }}</strong>
-                <span v-if="currentWord?.phonetic" class="phonetic-hint"> /{{ currentWord.phonetic }}/</span>
+            <!-- Back -->
+            <div class="rb" v-show="isFlipped">
+              <div class="rb-word">{{ currentWord?.word }}</div>
+              <div class="rb-phonetic" v-if="currentWord?.phonetic">/{{ currentWord.phonetic }}/</div>
+              <div class="rb-meaning">{{ currentWord?.meaning }}</div>
+              <div v-if="currentWord?.sentences?.length" class="rb-sentence">
+                {{ currentWord.sentences[0].en }}
+                <div class="rb-sentence-zh">{{ currentWord.sentences[0].zh }}</div>
               </div>
-              <button class="btn-next" @click="nextReview()">继续 →</button>
             </div>
           </div>
-        </template>
+        </div>
+
+        <div class="review-actions" v-if="isFlipped">
+          <button class="act act-known" @click="rateWord('known')">😊 认识</button>
+          <button class="act act-fuzzy" @click="rateWord('fuzzy')">🤔 模糊</button>
+          <button class="act act-forgot" @click="rateWord('forgot')">😅 忘记</button>
+          <button class="act act-skip" @click="skipWord()">⏭</button>
+        </div>
       </div>
     </template>
 
     <!-- DONE -->
     <template v-if="phase === 'done'">
-      <div class="done-screen">
-        <div class="done-icon">✅</div>
+      <div class="done-section">
+        <div class="done-icon">{{ getPassCount() >= getFailCount() ? '🎉' : '💪' }}</div>
         <h2>复习完成！</h2>
-        <div class="done-stats">
-          <div class="done-stat">
-            <div class="ds-val correct">{{ correctCount }}</div>
-            <div class="ds-lbl">正确</div>
-          </div>
-          <div class="done-stat">
-            <div class="ds-val wrong-num">{{ wrongCount }}</div>
-            <div class="ds-lbl">错误</div>
-          </div>
-          <div class="done-stat">
-            <div class="ds-val">{{ getAccuracy() }}</div>
-            <div class="ds-lbl">准确率</div>
-          </div>
+        <p class="done-sub">{{ reviewQueue.length }} 个词 · 通过 {{ getPassCount() }} · 需重学 {{ getFailCount() }}</p>
+        <div class="done-bar">
+          <div class="done-pass" :style="{ width: (getPassCount() / Math.max(1, results.length) * 100) + '%' }"></div>
         </div>
-        <div class="done-actions">
-          <button class="btn-start" @click="restart()">再来一轮</button>
-        </div>
+        <button class="btn-start" @click="phase = 'ready'">返回</button>
       </div>
     </template>
   </div>
 </template>
 
 <style scoped>
-.review-view {
-  max-width: 500px;
-  margin: 0 auto;
-}
+.review-view { max-width: 520px; margin: 0 auto; }
 
-/* Mode select */
-.select-screen {
-  text-align: center;
-  padding: 20px 0;
-}
-.select-icon { font-size: 56px; margin-bottom: 8px; }
-.select-screen h2 { font-size: 24px; color: #2c3e50; margin-bottom: 4px; }
-.select-subtitle { color: #888; font-size: 14px; margin-bottom: 24px; }
-.select-subtitle strong { color: #4a90d9; }
+.ready-section { text-align: center; padding: 40px 16px; }
+.ready-icon { font-size: 64px; margin-bottom: 8px; }
+.ready-section h2 { font-size: 24px; font-weight: 700; color: var(--text-primary, #2c3e50); }
+.ready-sub { color: var(--text-muted, #888); font-size: 15px; margin-bottom: 24px; }
+.ready-info { display: flex; flex-direction: column; gap: 8px; margin-bottom: 24px; font-size: 14px; color: var(--text-secondary, #555); }
 
-.mode-list {
-  display: flex;
-  flex-direction: column;
-  gap: 10px;
-}
-.mode-card {
-  display: flex;
-  align-items: center;
-  gap: 14px;
-  padding: 16px;
-  background: white;
-  border: 1px solid #e8e8e8;
-  border-radius: 12px;
-  cursor: pointer;
-  transition: all 0.15s;
-}
-.mode-card:hover {
-  border-color: #4a90d9;
-  box-shadow: 0 2px 8px rgba(74,144,217,0.12);
-}
-.mode-icon { font-size: 32px; }
-.mode-name { font-weight: 600; color: #333; font-size: 15px; }
-.mode-desc { color: #999; font-size: 12px; margin-top: 2px; }
+.btn-start { padding: 14px 48px; background: linear-gradient(135deg, var(--accent, #4a90d9), var(--accent-light, #357abd)); color: white; border: none; border-radius: 12px; font-size: 17px; font-weight: 600; cursor: pointer; transition: all 0.15s; }
+.btn-start:hover { transform: translateY(-2px); box-shadow: 0 6px 20px rgba(74,144,217,0.35); }
 
-.review-count { margin-top: 24px; color: #888; font-size: 15px; }
-.hint { color: #bbb; font-size: 13px; }
+/* Review */
+.review-screen { display: flex; flex-direction: column; min-height: calc(100vh - 160px); }
+.review-progress { display: flex; align-items: center; gap: 8px; margin-bottom: 16px; }
+.review-bar-bg { flex: 1; height: 6px; background: #f0f0f0; border-radius: 3px; overflow: hidden; }
+.review-bar-fill { height: 100%; background: var(--accent, #4a90d9); border-radius: 3px; transition: width 0.3s; }
+.review-count { font-size: 12px; color: var(--text-muted, #999); }
 
-/* Play screen */
-.play-screen {
-  padding: 8px 0;
-}
-.progress-bar-bg {
-  height: 6px;
-  background: #f0f0f0;
-  border-radius: 3px;
-  overflow: hidden;
-  margin-bottom: 8px;
-}
-.progress-bar-fill {
-  height: 100%;
-  background: linear-gradient(90deg, #4a90d9, #67b8f7);
-  border-radius: 3px;
-  transition: width 0.3s;
-}
-.play-header {
-  display: flex;
-  justify-content: space-between;
-  align-items: center;
-  margin-bottom: 20px;
-}
-.score-correct { color: #52c41a; font-weight: 600; font-size: 15px; }
-.score-wrong { color: #ff4d4f; font-weight: 600; font-size: 15px; }
-.play-count { color: #999; font-size: 13px; }
+.review-card-wrapper { flex: 1; display: flex; align-items: center; justify-content: center; perspective: 1000px; padding: 16px 0; }
+.review-card { width: 100%; max-width: 420px; min-height: 280px; position: relative; transition: transform 0.35s ease; transform-style: preserve-3d; }
+.review-card.flipped { transform: rotateY(180deg); }
+.rf, .rb { position: absolute; inset: 0; backface-visibility: hidden; display: flex; flex-direction: column; align-items: center; justify-content: center; padding: 24px; border-radius: 18px; background: var(--bg-card, white); border: 1px solid var(--border-color, #e8e8e8); box-shadow: var(--shadow, 0 2px 8px rgba(0,0,0,0.06)); min-height: 280px; text-align: center; }
+.rb { transform: rotateY(180deg); }
+.rw { font-size: 32px; font-weight: 700; color: var(--text-primary, #2c3e50); }
+.rp { color: var(--text-muted, #999); font-size: 14px; font-style: italic; margin-top: 6px; }
+.rhint { margin-top: 32px; color: var(--text-muted, #bbb); font-size: 12px; animation: pulse 2s infinite; }
+@keyframes pulse { 0%,100% { opacity: 0.5; } 50% { opacity: 1; } }
+.rb-speak { margin-top: 16px; background: var(--accent-bg, #f0f7ff); border: 1px solid var(--accent, #4a90d9); color: var(--accent, #4a90d9); border-radius: 6px; padding: 4px 12px; cursor: pointer; font-size: 14px; }
+.rb-word { font-size: 26px; font-weight: 700; color: var(--text-primary, #2c3e50); }
+.rb-phonetic { font-size: 13px; color: var(--text-muted, #999); font-style: italic; margin: 4px 0; }
+.rb-meaning { font-size: 18px; color: var(--accent, #378ADD); font-weight: 600; margin: 10px 0; }
+.rb-sentence { font-size: 12px; color: var(--text-secondary, #555); font-style: italic; }
+.rb-sentence-zh { color: var(--text-muted, #999); font-size: 11px; margin-top: 2px; }
 
-/* Choice mode */
-.choice-word {
-  text-align: center;
-  font-size: 32px;
-  font-weight: 700;
-  color: #2c3e50;
-  margin-bottom: 4px;
-}
-.choice-phonetic {
-  text-align: center;
-  color: #999;
-  font-size: 14px;
-  font-style: italic;
-  margin-bottom: 24px;
-}
-.choices {
-  display: flex;
-  flex-direction: column;
-  gap: 8px;
-}
-.choice-btn {
-  padding: 14px 16px;
-  border: 2px solid #e8e8e8;
-  border-radius: 12px;
-  background: white;
-  font-size: 15px;
-  cursor: pointer;
-  transition: all 0.15s;
-  text-align: left;
-}
-.choice-btn:hover:not(:disabled) {
-  border-color: #4a90d9;
-  background: #f8faff;
-}
-.choice-btn.selected { border-color: #4a90d9; }
-.choice-btn.correct { border-color: #52c41a; background: #f0faf0; }
-.choice-btn.wrong { border-color: #ff4d4f; background: #fff0f0; }
-.choice-btn:disabled { cursor: default; }
-
-/* Spell mode */
-.spell-hint {
-  text-align: center;
-  font-size: 20px;
-  font-weight: 600;
-  color: #378ADD;
-  margin-bottom: 4px;
-}
-.spell-pos {
-  text-align: center;
-  color: #e67e22;
-  font-size: 13px;
-  margin-bottom: 24px;
-}
-.spell-input-wrap { text-align: center; margin-bottom: 12px; }
-.spell-input {
-  width: 100%;
-  max-width: 320px;
-  padding: 14px 16px;
-  border: 2px solid #e0e0e0;
-  border-radius: 12px;
-  font-size: 20px;
-  text-align: center;
-  outline: none;
-  transition: border-color 0.2s;
-}
-.spell-input:focus { border-color: #4a90d9; }
-.spell-input.correct { border-color: #52c41a; background: #f0faf0; }
-.spell-input.wrong { border-color: #ff4d4f; background: #fff0f0; }
-.spell-actions { text-align: center; }
-.btn-check {
-  padding: 10px 32px;
-  background: #4a90d9;
-  color: white;
-  border: none;
-  border-radius: 8px;
-  font-size: 15px;
-  cursor: pointer;
-}
-
-/* Speed mode */
-.speed-card { text-align: center; padding: 40px 0; }
-.speed-word { font-size: 32px; font-weight: 700; color: #2c3e50; margin-bottom: 4px; }
-.speed-phonetic { color: #999; font-size: 14px; margin-bottom: 24px; }
-.speed-actions {
-  display: flex;
-  justify-content: center;
-  gap: 16px;
-}
-.btn-known, .btn-forgot {
-  padding: 12px 28px;
-  border: none;
-  border-radius: 12px;
-  font-size: 15px;
-  cursor: pointer;
-  transition: all 0.15s;
-}
-.btn-known { background: #e8f5e9; color: #2e7d32; }
-.btn-forgot { background: #fce4ec; color: #c62828; }
-.btn-known:hover { background: #c8e6c9; }
-.btn-forgot:hover { background: #f8bbd0; }
-
-.speed-reveal { text-align: center; padding: 24px 0; }
-.speed-meaning {
-  font-size: 18px;
-  color: #378ADD;
-  margin: 8px 0;
-  font-weight: 600;
-}
-.speed-sentence {
-  font-style: italic;
-  color: #666;
-  font-size: 13px;
-  margin-bottom: 16px;
-}
-
-/* Common */
-.feedback-row {
-  display: flex;
-  justify-content: space-between;
-  align-items: center;
-  margin-top: 16px;
-  padding: 12px 16px;
-  background: white;
-  border-radius: 10px;
-  border: 1px solid #e8e8e8;
-}
-.feedback { font-size: 15px; }
-.feedback.correct { color: #52c41a; }
-.feedback.wrong { color: #ff4d4f; font-size: 14px; }
-.feedback.wrong strong { font-size: 16px; }
-.phonetic-hint { color: #999; font-size: 13px; }
-
-/* Listen mode */
-.listen-section { text-align: center; padding: 20px 0; }
-.listen-hint { font-size: 15px; color: #666; margin-bottom: 20px; }
-.listen-play-section { margin-bottom: 20px; }
-.btn-listen {
-  display: inline-flex;
-  align-items: center;
-  gap: 8px;
-  padding: 16px 32px;
-  background: linear-gradient(135deg, #667eea, #764ba2);
-  color: white;
-  border: none;
-  border-radius: 16px;
-  font-size: 17px;
-  cursor: pointer;
-  transition: all 0.15s;
-}
-.btn-listen:hover { transform: scale(1.05); box-shadow: 0 4px 16px rgba(102,126,234,0.4); }
-.listen-icon { font-size: 28px; }
-.listen-said { margin-top: 8px; color: #999; font-size: 12px; }
-
-.btn-next {
-  padding: 8px 20px;
-  background: #4a90d9;
-  color: white;
-  border: none;
-  border-radius: 8px;
-  font-size: 14px;
-  cursor: pointer;
-}
+.review-actions { display: grid; grid-template-columns: 1fr 1fr 1fr auto; gap: 8px; padding: 8px 0; }
+.act { border: none; padding: 12px 8px; border-radius: 10px; cursor: pointer; font-size: 13px; font-weight: 500; transition: all 0.15s; }
+.act:hover { transform: translateY(-2px); }
+.act-known { background: #e8f5e9; color: #2e7d32; }
+.act-fuzzy { background: #fff3e0; color: #e65100; }
+.act-forgot { background: #fce4ec; color: #c62828; }
+.act-skip { background: #f5f5f5; color: #888; font-size: 18px; }
 
 /* Done */
-.done-screen { text-align: center; padding: 40px 16px; }
+.done-section { text-align: center; padding: 40px 16px; }
 .done-icon { font-size: 64px; margin-bottom: 8px; }
-.done-screen h2 { font-size: 26px; color: #2c3e50; margin-bottom: 20px; }
-.done-stats {
-  display: grid;
-  grid-template-columns: repeat(3, 1fr);
-  gap: 10px;
-  margin-bottom: 24px;
-}
-.done-stat {
-  background: white;
-  border: 1px solid #e8e8e8;
-  border-radius: 10px;
-  padding: 16px;
-}
-.ds-val { font-size: 28px; font-weight: 700; }
-.ds-val.correct { color: #52c41a; }
-.ds-val.wrong-num { color: #ff4d4f; }
-.ds-lbl { font-size: 12px; color: #888; margin-top: 4px; }
-.done-actions { margin-top: 8px; }
+.done-section h2 { font-size: 24px; font-weight: 700; color: var(--text-primary, #2c3e50); }
+.done-sub { color: var(--text-muted, #888); font-size: 14px; margin-bottom: 20px; }
+.done-bar { height: 10px; background: #f0f0f0; border-radius: 5px; overflow: hidden; margin-bottom: 24px; }
+.done-pass { height: 100%; background: #52c41a; border-radius: 5px; transition: width 0.3s; }
 </style>

@@ -1,543 +1,281 @@
 <script setup lang="ts">
 import { ref, computed, onMounted } from 'vue'
-import { loadData, saveData } from '../utils/storage'
-import { DEFAULT_INTERVALS, getIntervals, setIntervals, resetIntervals, loadIntervalsFromData } from '../utils/ebbinghaus'
+import { loadData, saveData, isHAConnected } from '../utils/storage'
+import {
+  DEFAULT_INTERVALS, getIntervals, setIntervals, resetIntervals,
+  loadIntervalsFromData, getDueCount, getMasteredCount,
+  getLearnedCount, getAverageEF, generateRetentionCurve,
+  getSM2Config, setSM2Config
+} from '../utils/ebbinghaus'
+import { getLevel, getLevelProgress, checkNewAchievements, ACHIEVEMENTS, XP_RULES, LEVELS } from '../utils/gamification'
 import StudyHeatmap from './StudyHeatmap.vue'
 
 const props = defineProps<{ appData: any }>()
 
 const data = ref(props.appData)
 
-const TOTAL_DAYS = 48
-const WORDS_PER_DAY = 50
+// SM-2 Stats
+const totalXP = computed(() => (window as any).__appData?.totalXP || 0)
+const levelInfo = computed(() => getLevel(totalXP.value))
+const levelProgress = computed(() => getLevelProgress(totalXP.value))
+const avgEF = computed(() => getAverageEF(data.value.records))
+const masteredCount = computed(() => getMasteredCount(data.value.records))
+const learnedCount = computed(() => getLearnedCount(data.value.records))
+const dueCount = computed(() => getDueCount(data.value.records))
+const haConnected = ref(false)
 
-const completionRate = computed(() => {
-  if (data.value.currentDay <= 1) return 0
-  return Math.round(((data.value.currentDay - 1) / TOTAL_DAYS) * 100)
+// Retention curve
+const curveData = computed(() => {
+  const records = Object.values(data.value.records)
+  if (records.length === 0) return []
+  const sample = records.find(r => r.status === 'review' || r.status === 'mastered')
+  if (!sample) return []
+  return generateRetentionCurve(sample)
 })
 
-const todayRate = computed(() => {
-  if (data.value.lastCheckin === new Date().toISOString().split('T')[0]) {
-    return 100
-  }
-  return 0
+// Achievements
+const earnedAchievements = computed(() => {
+  const saved = (window as any).__appData?.achievements || []
+  return ACHIEVEMENTS.filter(a => saved.includes(a.id))
 })
 
-const weeklyRate = computed(() => {
-  return Math.round((data.value.streakDays / 7) * 100)
+const unearnedAchievements = computed(() => {
+  const saved = (window as any).__appData?.achievements || []
+  return ACHIEVEMENTS.filter(a => !saved.includes(a.id))
 })
 
-const reviewRoundStats = computed(() => {
-  const rounds = BASE_INTERVALS.map((interval, i) => {
-    const count = Object.values(data.value.records).filter(
-      (r) => r.reviewCount === i || (r.reviewCount > i && i === BASE_INTERVALS.length - 1)
-    ).length
-    return {
-      round: i + 1,
-      interval: interval,
-      count: count,
-      label: `第${i + 1}轮 (${interval}天后)`
-    }
-  })
-  return rounds
+// Ebbinghaus settings
+const showSettings = ref(false)
+const intervalInputs = ref([...getIntervals()])
+const showSM2Config = ref(false)
+const qualityPassInput = ref(getSM2Config().QUALITY_PASS)
+
+onMounted(() => {
+  const saved = loadData()
+  loadIntervalsFromData(saved)
+  intervalInputs.value = [...getIntervals()]
+  haConnected.value = isHAConnected()
+  ;(window as any).__appData = saved
 })
 
-const masteredCount = computed(() => {
-  return Object.values(data.value.records).filter((r) => r.status === 'mastered').length
-})
+function saveIntervals() {
+  const valid = intervalInputs.value.filter(n => n >= 1)
+  if (valid.length < 3) { alert('至少需要 3 轮间隔'); return }
+  setIntervals(valid)
+  const saved = loadData()
+  saved.ebbinghausIntervals = valid
+  saveData(saved)
+  showSettings.value = false
+}
 
-const learningCount = computed(() => {
-  return Object.values(data.value.records).filter((r) => r.status === 'learning').length
-})
+function resetToDefault() {
+  resetIntervals()
+  intervalInputs.value = [...DEFAULT_INTERVALS]
+  const saved = loadData()
+  delete saved.ebbinghausIntervals
+  saveData(saved)
+  showSettings.value = false
+}
 
-const reviewCount = computed(() => {
-  return Object.values(data.value.records).filter((r) => r.status === 'review').length
-})
-
-const recordsTotal = computed(() => data.value.totalLearned)
-const masteredPercent = computed(() => 
-  recordsTotal.value > 0 ? Math.round((masteredCount.value / recordsTotal.value) * 100) : 0
-)
-
-function formatDate(dateStr: string): string {
-  if (!dateStr) return '从未'
-  const d = new Date(dateStr)
-  return `${d.getMonth() + 1}月${d.getDate()}日`
+function saveSM2Config() {
+  setSM2Config({ QUALITY_PASS: qualityPassInput.value })
+  showSM2Config.value = false
 }
 
 function handleReset() {
-  if (confirm('确定要重置所有学习数据吗？此操作不可撤销。')) {
-    localStorage.removeItem('ha-vocab-tracker')
-    data.value = {
-      currentDay: 1,
-      records: {},
-      streakDays: 0,
-      totalLearned: 0,
-      lastCheckin: '',
-      startedAt: new Date().toISOString(),
-      dailyMinutes: {},
-      wrongWords: {}
-    }
+  if (confirm('确认重置所有学习数据？此操作不可撤销！')) {
+    const key = `ha_vocab_tracker_${(window as any).__appData?.currentWordBook || 'local'}`
+    localStorage.removeItem(key)
+    location.reload()
   }
+}
+
+function formatDate(d: string): string {
+  if (!d) return '从未'
+  return d
 }
 </script>
 
 <template>
   <div class="stats-dashboard">
+    <!-- Header -->
     <div class="stats-header">
-      <h2>学习统计</h2>
-      <span class="stats-subtitle">第 {{ data.currentDay }} 天 / {{ TOTAL_DAYS }} 天</span>
+      <h2>📊 学习统计</h2>
     </div>
 
-    <!-- Top Stats Row -->
-    <div class="stats-row">
-      <div class="stat-card streak">
-    <div class="stat-value">{{ data.streakDays }}</div>
-    <div class="stat-label">连续天数</div>
-      </div>
-      <div class="stat-card total">
-        <div class="stat-value">{{ data.totalLearned }}</div>
-        <div class="stat-label">累计词汇</div>
-      </div>
-      <div class="stat-card today">
-        <div class="stat-value">{{ todayRate }}%</div>
-        <div class="stat-label">今日完成</div>
-      </div>
-      <div class="stat-card mastered">
-        <div class="stat-value">{{ masteredPercent }}%</div>
-        <div class="stat-label">掌握率</div>
-      </div>
-    </div>
-
-    <!-- Progress & Status (desktop side-by-side) -->
-    <div class="stats-grid-2col">
-      <div class="progress-card">
-        <div class="progress-header">
-          <h3>计划进度</h3>
-          <span class="progress-percent">{{ completionRate }}%</span>
-        </div>
-        <div class="progress-bar">
-          <div class="progress-fill" :style="{ width: completionRate + '%' }"></div>
-        </div>
-        <div class="progress-detail">
-          <span>已完成 {{ Math.max(0, data.currentDay - 1) }} / {{ TOTAL_DAYS }} 天</span>
-          <span>每日 {{ WORDS_PER_DAY }} 词</span>
-        </div>
-      </div>
-
-      <div class="progress-card">
-        <div class="progress-header">
-          <h3>词汇状态分布</h3>
-        </div>
-        <div class="status-chart">
-          <div class="status-bar">
-            <div
-              class="status-segment mastered"
-              :style="{ width: (masteredCount / Math.max(1, recordsTotal)) * 100 + '%' }"
-            ></div>
-            <div
-              class="status-segment review"
-              :style="{ width: (reviewCount / Math.max(1, recordsTotal)) * 100 + '%' }"
-            ></div>
-            <div
-              class="status-segment learning"
-              :style="{ width: (learningCount / Math.max(1, recordsTotal)) * 100 + '%' }"
-            ></div>
-          </div>
-          <div class="status-legend">
-            <span><span class="dot mastered"></span> 已掌握 {{ masteredCount }}</span>
-            <span><span class="dot review"></span> 复习中 {{ reviewCount }}</span>
-            <span><span class="dot learning"></span> 学习中 {{ learningCount }}</span>
-          </div>
+    <!-- Level & XP Card -->
+    <div class="card level-card">
+      <div class="level-icon">{{ levelInfo.level >= 5 ? '👑' : levelInfo.level >= 3 ? '🏅' : '🌱' }}</div>
+      <div class="level-info">
+        <div class="level-title">{{ levelInfo.title }}</div>
+        <div class="level-xp">Lv.{{ levelInfo.level }} · {{ totalXP }} XP · {{ levelInfo.xpForNext }} XP 到下一级</div>
+        <div class="level-bar-bg">
+          <div class="level-bar-fill" :style="{ width: levelProgress + '%' }"></div>
         </div>
       </div>
     </div>
 
-    <!-- Memory Curve -->
-    <div class="progress-card">
-      <div class="progress-header">
-        <h3>记忆曲线 - 各轮次词汇量</h3>
-        <span class="progress-subtitle">6 轮间隔复习</span>
+    <!-- Core Stats Grid -->
+    <div class="stats-grid">
+      <div class="stat-card">
+        <div class="stat-icon">📖</div>
+        <div class="stat-val">{{ learnedCount }}</div>
+        <div class="stat-lbl">已学</div>
       </div>
-      <div class="rounds-chart">
-        <div v-for="(rs, i) in reviewRoundStats" :key="i" class="round-item">
-          <div class="round-label">{{ rs.label }}</div>
-          <div class="round-bar-bg">
-            <div
-              class="round-bar-fill"
-              :style="{ width: Math.min(100, (rs.count / 100) * 100) + '%' }"
-            ></div>
+      <div class="stat-card">
+        <div class="stat-icon">✅</div>
+        <div class="stat-val" style="color:#52c41a">{{ masteredCount }}</div>
+        <div class="stat-lbl">掌握</div>
+      </div>
+      <div class="stat-card">
+        <div class="stat-icon">🔄</div>
+        <div class="stat-val" style="color:#faad14">{{ dueCount }}</div>
+        <div class="stat-lbl">待复习</div>
+      </div>
+      <div class="stat-card">
+        <div class="stat-icon">🧠</div>
+        <div class="stat-val" style="color:#9b59b6">{{ avgEF.toFixed(2) }}</div>
+        <div class="stat-lbl">平均EF</div>
+      </div>
+    </div>
+
+    <!-- SM-2 Forgetting Curve -->
+    <div class="card" v-if="curveData.length > 0">
+      <h3 class="card-title">📈 遗忘曲线预测</h3>
+      <div class="curve-container">
+        <div class="curve-bars">
+          <div v-for="(p, i) in curveData" :key="i" class="curve-bar-item">
+            <div class="curve-bar-fill" :style="{ height: (p.retention * 100) + '%', background: p.retention > 0.7 ? '#52c41a' : p.retention > 0.4 ? '#faad14' : '#ff4d4f' }"
+              :title="`${p.label}: ${Math.round(p.retention * 100)}%`">
+            </div>
+            <div class="curve-bar-label">{{ p.label }}</div>
           </div>
-          <div class="round-count">{{ rs.count }}</div>
         </div>
       </div>
+      <div class="curve-note">基于 SM-2 算法预测，假设每次回答质量 = 4</div>
     </div>
 
     <!-- Study Heatmap -->
     <StudyHeatmap :dailyMinutes="data.dailyMinutes || {}" />
 
-    <!-- Ebbinghaus Settings -->
-    <div class="settings-section">
-      <button class="btn-settings" @click="showSettings = !showSettings">
-        ⚙️ 艾宾浩斯间隔设置
-        <span class="toggle-arrow">{{ showSettings ? '▲' : '▼' }}</span>
-      </button>
-
-      <div v-if="showSettings" class="settings-body">
-        <p class="settings-desc">设置复习间隔天数（每轮逐渐增长，至少 3 轮）</p>
-        <div class="interval-list">
-          <div v-for="(v, i) in intervalInputs" :key="i" class="interval-row">
-            <span class="interval-label">第 {{ i + 1 }} 轮</span>
-            <input type="number" v-model.number="intervalInputs[i]" min="1" max="90" class="interval-input" />
-            <span class="interval-unit">天</span>
-            <button v-if="i === intervalInputs.length - 1" class="btn-add" @click="intervalInputs.push(7)">+</button>
-            <button v-if="intervalInputs.length > 3" class="btn-remove" @click="intervalInputs.splice(i, 1)">✕</button>
-          </div>
+    <!-- Achievements -->
+    <div class="card">
+      <h3 class="card-title">🏆 成就</h3>
+      <div class="achievement-grid">
+        <div v-for="a in earnedAchievements" :key="a.id" class="achievement earned" :title="a.desc">
+          <span class="ach-icon">{{ a.icon }}</span>
+          <span class="ach-name">{{ a.name }}</span>
         </div>
-        <div class="settings-actions">
-          <button class="btn-save" @click="saveIntervals()">保存</button>
-          <button class="btn-reset-small" @click="resetToDefault()">恢复默认</button>
+        <div v-for="a in unearnedAchievements.slice(0, 6)" :key="a.id" class="achievement locked" :title="a.desc">
+          <span class="ach-icon">❓</span>
+          <span class="ach-name">???</span>
         </div>
       </div>
     </div>
 
+    <!-- Settings -->
+    <div class="card settings-card">
+      <div class="setting-item" @click="showSettings = !showSettings">
+        <span>⚙️ 复习间隔</span>
+        <span>{{ showSettings ? '▲' : '▼' }}</span>
+      </div>
+      <div v-if="showSettings" class="setting-body">
+        <p class="setting-desc">自定义 SM-2 基础间隔天数</p>
+        <div class="interval-list">
+          <div v-for="(v, i) in intervalInputs" :key="i" class="interval-row">
+            <span class="int-label">第{{ i + 1 }}轮</span>
+            <input type="number" v-model.number="intervalInputs[i]" min="1" max="90" class="int-input" />
+            <span class="int-unit">天</span>
+            <button v-if="i === intervalInputs.length - 1" class="int-add" @click="intervalInputs.push(7)">+</button>
+            <button v-if="intervalInputs.length > 3" class="int-remove" @click="intervalInputs.splice(i, 1)">✕</button>
+          </div>
+        </div>
+        <div class="setting-actions">
+          <button class="btn-save" @click="saveIntervals()">保存</button>
+          <button class="btn-reset-sm" @click="resetToDefault()">默认</button>
+        </div>
+      </div>
+
+      <div class="setting-item" @click="showSM2Config = !showSM2Config" style="margin-top:8px">
+        <span>🧠 SM-2 及格线</span>
+        <span>{{ showSM2Config ? '▲' : '▼' }}</span>
+      </div>
+      <div v-if="showSM2Config" class="setting-body">
+        <p class="setting-desc">回答质量 ≥ 多少算通过 (当前: {{ getSM2Config().QUALITY_PASS }})</p>
+        <input type="range" v-model.number="qualityPassInput" min="1" max="5" step="1" class="range-input" />
+        <div class="range-labels"><span>1 宽松</span><span>5 严格</span></div>
+        <button class="btn-save" @click="saveSM2Config()" style="width:100%;margin-top:10px">保存</button>
+      </div>
+    </div>
+
     <!-- Footer -->
-    <div class="info-row">
-      <span class="last-checkin">
-        上次打卡：{{ formatDate(data.lastCheckin) }}
-      </span>
+    <div class="footer-row">
+      <span class="last-checkin">上次打卡: {{ formatDate(data.lastCheckin) }}</span>
       <button class="btn-reset" @click="handleReset">重置数据</button>
     </div>
   </div>
 </template>
 
 <style scoped>
-.stats-dashboard {
-  padding: 0;
-}
-.stats-header {
-  display: flex;
-  justify-content: space-between;
-  align-items: baseline;
-  margin-bottom: 16px;
-  flex-wrap: wrap;
-  gap: 4px;
-}
-.stats-header h2 {
-  margin: 0;
-  font-size: 20px;
-  color: #2c3e50;
-}
-.stats-subtitle {
-  font-size: 13px;
-  color: #999;
-}
+.stats-dashboard { max-width: 600px; margin: 0 auto; }
+.stats-header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 16px; }
+.stats-header h2 { font-size: 20px; color: var(--text-primary, #2c3e50); margin: 0; }
 
-/* Top Stats Row - auto grid, responsive */
-.stats-row {
-  display: grid;
-  grid-template-columns: repeat(2, 1fr);
-  gap: 10px;
-  margin-bottom: 14px;
-}
-@media (min-width: 480px) {
-  .stats-row {
-    grid-template-columns: repeat(4, 1fr);
-  }
-}
-.stat-card {
-  background: #fff;
-  border: 1px solid #e8e8e8;
-  border-radius: 10px;
-  padding: 16px 10px;
-  text-align: center;
-}
-.stat-value {
-  font-size: 28px;
-  font-weight: 700;
-  line-height: 1.2;
-}
-@media (min-width: 480px) {
-  .stat-value { font-size: 32px; }
-}
-.stat-label {
-  font-size: 11px;
-  color: #999;
-  margin-top: 4px;
-}
-.stat-card.streak .stat-value { color: #f5a623; }
-.stat-card.total .stat-value { color: #4a90d9; }
-.stat-card.today .stat-value { color: #52c41a; }
-.stat-card.mastered .stat-value { color: #1D9E75; }
+.card { background: var(--bg-card, white); border: 1px solid var(--border-color, #e8e8e8); border-radius: 12px; padding: 16px; margin-bottom: 12px; }
+.card-title { font-size: 14px; color: var(--text-secondary, #555); margin: 0 0 12px; }
 
-/* 2-col grid for desktop */
-.stats-grid-2col {
-  display: grid;
-  grid-template-columns: 1fr;
-  gap: 12px;
-  margin-bottom: 12px;
-}
-@media (min-width: 600px) {
-  .stats-grid-2col {
-    grid-template-columns: 1fr 1fr;
-  }
-}
+/* Level */
+.level-card { display: flex; align-items: center; gap: 14px; }
+.level-icon { font-size: 40px; }
+.level-info { flex: 1; }
+.level-title { font-size: 18px; font-weight: 700; color: var(--text-primary, #2c3e50); }
+.level-xp { font-size: 12px; color: var(--text-muted, #888); margin: 2px 0 6px; }
+.level-bar-bg { height: 8px; background: #f0f0f0; border-radius: 4px; overflow: hidden; }
+.level-bar-fill { height: 100%; background: linear-gradient(90deg, #4a90d9, #9b59b6); border-radius: 4px; transition: width 0.3s; }
 
-/* Cards */
-.progress-card {
-  background: #fff;
-  border: 1px solid #e8e8e8;
-  border-radius: 10px;
-  padding: 16px;
-  margin-bottom: 12px;
-}
-.progress-card h3 {
-  margin: 0;
-  font-size: 15px;
-  color: #333;
-}
-.progress-header {
-  display: flex;
-  justify-content: space-between;
-  align-items: center;
-  margin-bottom: 12px;
-}
-.progress-percent {
-  font-size: 18px;
-  font-weight: 600;
-  color: #4a90d9;
-}
-.progress-subtitle {
-  font-size: 12px;
-  color: #aaa;
-}
+/* Grid */
+.stats-grid { display: grid; grid-template-columns: repeat(4, 1fr); gap: 8px; margin-bottom: 12px; }
+.stat-card { background: var(--bg-card, white); border: 1px solid var(--border-color, #e8e8e8); border-radius: 10px; padding: 12px; text-align: center; }
+.stat-icon { font-size: 24px; margin-bottom: 4px; }
+.stat-val { font-size: 22px; font-weight: 700; color: var(--text-primary, #2c3e50); }
+.stat-lbl { font-size: 11px; color: var(--text-muted, #888); margin-top: 2px; }
 
-.progress-bar {
-  height: 10px;
-  background: #f0f0f0;
-  border-radius: 5px;
-  overflow: hidden;
-  margin-bottom: 8px;
-}
-.progress-fill {
-  height: 100%;
-  background: linear-gradient(90deg, #f5a623, #f7c948);
-  border-radius: 5px;
-  transition: width 0.3s;
-}
-.progress-fill.blue {
-  background: linear-gradient(90deg, #4a90d9, #67b8f7);
-}
-.progress-detail {
-  display: flex;
-  justify-content: space-between;
-  color: #999;
-  font-size: 12px;
-}
+/* Curve */
+.curve-container { height: 140px; display: flex; align-items: flex-end; padding: 0 8px; }
+.curve-bars { display: flex; align-items: flex-end; gap: 6px; width: 100%; height: 120px; }
+.curve-bar-item { flex: 1; display: flex; flex-direction: column; align-items: center; height: 100%; justify-content: flex-end; }
+.curve-bar-fill { width: 100%; max-width: 30px; border-radius: 4px 4px 0 0; transition: height 0.3s; min-height: 4px; }
+.curve-bar-label { font-size: 9px; color: var(--text-muted, #999); margin-top: 4px; }
+.curve-note { font-size: 11px; color: var(--text-muted, #999); text-align: center; margin-top: 8px; }
 
-/* Status Chart */
-.status-bar {
-  display: flex;
-  height: 12px;
-  border-radius: 6px;
-  overflow: hidden;
-  margin-bottom: 10px;
-}
-.status-segment.mastered { background: #52c41a; }
-.status-segment.review { background: #4a90d9; }
-.status-segment.learning { background: #faad14; }
-.status-legend {
-  display: flex;
-  gap: 16px;
-  font-size: 12px;
-  color: #666;
-  flex-wrap: wrap;
-}
-.dot {
-  display: inline-block;
-  width: 8px;
-  height: 8px;
-  border-radius: 50%;
-  margin-right: 4px;
-}
-.dot.mastered { background: #52c41a; }
-.dot.review { background: #4a90d9; }
-.dot.learning { background: #faad14; }
+/* Achievements */
+.achievement-grid { display: flex; flex-wrap: wrap; gap: 8px; }
+.achievement { display: flex; align-items: center; gap: 6px; padding: 6px 12px; border-radius: 20px; font-size: 12px; }
+.achievement.earned { background: #fff8e1; color: #7c4dff; }
+.achievement.locked { background: #f5f5f5; color: #bbb; }
+.ach-icon { font-size: 16px; }
+.ach-name { font-weight: 500; }
 
-/* Rounds Chart */
-.rounds-chart {
-  display: flex;
-  flex-direction: column;
-  gap: 8px;
-}
-.round-item {
-  display: flex;
-  align-items: center;
-  gap: 10px;
-}
-.round-label {
-  min-width: 90px;
-  font-size: 12px;
-  color: #666;
-  flex-shrink: 0;
-}
-@media (min-width: 480px) {
-  .round-label { min-width: 120px; font-size: 13px; }
-}
-.round-bar-bg {
-  flex: 1;
-  height: 8px;
-  background: #f0f0f0;
-  border-radius: 4px;
-  overflow: hidden;
-}
-.round-bar-fill {
-  height: 100%;
-  background: linear-gradient(90deg, #4a90d9, #67b8f7);
-  border-radius: 4px;
-  transition: width 0.3s;
-}
-.round-count {
-  min-width: 30px;
-  text-align: right;
-  font-size: 12px;
-  color: #999;
-}
+/* Settings */
+.setting-item { display: flex; justify-content: space-between; align-items: center; padding: 8px 0; cursor: pointer; font-size: 14px; color: var(--text-secondary, #555); }
+.setting-item:hover { color: var(--accent, #4a90d9); }
+.setting-body { margin-top: 10px; padding: 12px; background: var(--bg-primary, #f8f9fa); border-radius: 8px; }
+.setting-desc { font-size: 12px; color: var(--text-muted, #888); margin-bottom: 10px; }
+.interval-list { display: flex; flex-direction: column; gap: 6px; margin-bottom: 10px; }
+.interval-row { display: flex; align-items: center; gap: 6px; }
+.int-label { font-size: 12px; color: var(--text-secondary, #555); min-width: 45px; }
+.int-input { width: 50px; padding: 4px 6px; border: 1px solid var(--border-color, #ddd); border-radius: 4px; text-align: center; font-size: 13px; }
+.int-unit { font-size: 11px; color: var(--text-muted, #999); }
+.int-add { padding: 2px 6px; border: 1px solid #52c41a; border-radius: 4px; background: white; color: #52c41a; font-size: 13px; cursor: pointer; }
+.int-remove { padding: 2px 6px; border: 1px solid #ff4d4f; border-radius: 4px; background: white; color: #ff4d4f; font-size: 11px; cursor: pointer; }
+.setting-actions { display: flex; gap: 8px; }
+.btn-save { flex: 1; padding: 8px; background: var(--accent, #4a90d9); color: white; border: none; border-radius: 6px; font-size: 13px; cursor: pointer; }
+.btn-reset-sm { padding: 8px 14px; background: white; border: 1px solid var(--border-color, #e0e0e0); border-radius: 6px; font-size: 12px; cursor: pointer; }
+.range-input { width: 100%; margin: 8px 0; }
+.range-labels { display: flex; justify-content: space-between; font-size: 11px; color: var(--text-muted, #999); }
 
-/* Info Row */
-.info-row {
-  display: flex;
-  justify-content: space-between;
-  align-items: center;
-  padding: 12px 0;
-  flex-wrap: wrap;
-  gap: 8px;
-}
-.last-checkin {
-  font-size: 13px;
-  color: #999;
-}
-.btn-reset {
-  padding: 6px 16px;
-  border: 1px solid #ff4d4f;
-  border-radius: 4px;
-  background: #fff;
-  color: #ff4d4f;
-  font-size: 13px;
-  cursor: pointer;
-  transition: all 0.2s;
-}
-.btn-reset:hover {
-  background: #fff2f0;
-}
-
-/* Settings Section */
-.settings-section {
-  margin-bottom: 20px;
-}
-.btn-settings {
-  width: 100%;
-  padding: 12px 16px;
-  background: white;
-  border: 1px solid #e8e8e8;
-  border-radius: 10px;
-  font-size: 14px;
-  cursor: pointer;
-  display: flex;
-  justify-content: space-between;
-  align-items: center;
-  color: #555;
-  transition: all 0.15s;
-}
-.btn-settings:hover {
-  border-color: #4a90d9;
-  color: #4a90d9;
-}
-.toggle-arrow {
-  font-size: 12px;
-  color: #999;
-}
-.settings-body {
-  margin-top: 10px;
-  padding: 16px;
-  background: #fafbfc;
-  border: 1px solid #e8e8e8;
-  border-radius: 10px;
-}
-.settings-desc {
-  font-size: 12px;
-  color: #888;
-  margin-bottom: 12px;
-}
-.interval-list {
-  display: flex;
-  flex-direction: column;
-  gap: 8px;
-  margin-bottom: 14px;
-}
-.interval-row {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-}
-.interval-label {
-  font-size: 13px;
-  color: #555;
-  min-width: 60px;
-}
-.interval-input {
-  width: 60px;
-  padding: 6px 8px;
-  border: 1px solid #ddd;
-  border-radius: 6px;
-  font-size: 14px;
-  text-align: center;
-}
-.interval-unit {
-  font-size: 12px;
-  color: #999;
-}
-.btn-add {
-  padding: 2px 8px;
-  border: 1px solid #52c41a;
-  border-radius: 4px;
-  background: white;
-  color: #52c41a;
-  font-size: 14px;
-  cursor: pointer;
-}
-.btn-remove {
-  padding: 2px 6px;
-  border: 1px solid #ff4d4f;
-  border-radius: 4px;
-  background: white;
-  color: #ff4d4f;
-  font-size: 12px;
-  cursor: pointer;
-}
-.settings-actions {
-  display: flex;
-  gap: 10px;
-}
-.btn-save {
-  flex: 1;
-  padding: 10px;
-  background: #4a90d9;
-  color: white;
-  border: none;
-  border-radius: 8px;
-  font-size: 14px;
-  cursor: pointer;
-}
-.btn-save:hover { background: #357abd; }
-.btn-reset-small {
-  padding: 10px 16px;
-  background: white;
-  border: 1px solid #e0e0e0;
-  border-radius: 8px;
-  font-size: 13px;
-  color: #666;
-  cursor: pointer;
-}
-.btn-reset-small:hover { border-color: #999; }
+.footer-row { display: flex; justify-content: space-between; align-items: center; margin-top: 16px; }
+.last-checkin { font-size: 12px; color: var(--text-muted, #888); }
+.btn-reset { padding: 6px 14px; border: 1px solid #ff4d4f; border-radius: 6px; background: white; color: #ff4d4f; font-size: 12px; cursor: pointer; }
+.btn-reset:hover { background: #fff2f0; }
 </style>
